@@ -10,6 +10,35 @@
 using namespace cv;
 using namespace std;
 
+struct Feature
+{
+	int x;
+	int y;
+	int label;
+	float theta;
+
+	//void read(const cv::FileNode &fn);
+	//void write(cv::FileStorage &fs) const;
+
+	Feature() : x(0), y(0), label(0) {}
+	Feature(int x, int y, int label);
+};
+inline Feature::Feature(int _x, int _y, int _label) : x(_x), y(_y), label(_label) {}
+
+struct Candidate
+{
+	Candidate(int x, int y, int label, float score);
+
+	/// Sort candidates with high score to the front
+	bool operator<(const Candidate &rhs) const
+	{
+		return score > rhs.score;
+	}
+
+	Feature f;
+	float score;
+};
+inline Candidate::Candidate(int x, int y, int label, float _score) : f(x, y, label), score(_score) {}
 
 class shapeInfoProducer
 {
@@ -112,6 +141,67 @@ void hysteresisGradient(Mat &magnitude, Mat &quantized_angle, Mat &angle, float 
 }
 
 
+void extractFeaturePoints()
+{
+
+	std::vector<Candidate> candidates;
+	float threshold_sq = strong_threshold * strong_threshold;
+
+	int nms_kernel_size = 5;
+	cv::Mat magnitude_valid = cv::Mat(magnitude.size(), CV_8UC1, cv::Scalar(255));
+
+	for (int r = 0 + nms_kernel_size / 2; r < magnitude.rows - nms_kernel_size / 2; ++r)
+	{
+		const uchar *mask_r = no_mask ? NULL : local_mask.ptr<uchar>(r);
+
+		for (int c = 0 + nms_kernel_size / 2; c < magnitude.cols - nms_kernel_size / 2; ++c)
+		{
+			float score = 0;
+			if (magnitude_valid.at<uchar>(r, c) > 0) {
+				score = magnitude.at<float>(r, c);
+				bool is_max = true;
+				for (int r_offset = -nms_kernel_size / 2; r_offset <= nms_kernel_size / 2; r_offset++) {
+					for (int c_offset = -nms_kernel_size / 2; c_offset <= nms_kernel_size / 2; c_offset++) {
+						if (r_offset == 0 && c_offset == 0) continue;
+
+						if (score < magnitude.at<float>(r + r_offset, c + c_offset)) {
+							score = 0;
+							is_max = false;
+							break;
+						}
+					}
+					if (!is_max) break;
+				}
+
+				if (is_max) {
+					for (int r_offset = -nms_kernel_size / 2; r_offset <= nms_kernel_size / 2; r_offset++) {
+						for (int c_offset = -nms_kernel_size / 2; c_offset <= nms_kernel_size / 2; c_offset++) {
+							if (r_offset == 0 && c_offset == 0) continue;
+							magnitude_valid.at<uchar>(r + r_offset, c + c_offset) = 0;
+						}
+					}
+				}
+			}
+
+			if (score > threshold_sq && angle.at<uchar>(r, c) > 0)
+			{
+				candidates.push_back(Candidate(c, r, getLabel(angle.at<uchar>(r, c)), score));
+				candidates.back().f.theta = angle_ori.at<float>(r, c);
+			}
+		}
+	}
+	// We require a certain number of features
+	if (candidates.size() < num_features) 
+	{
+		if (candidates.size() <= 4) {
+			std::cout << "too few features, abort" << std::endl;
+			return false;
+		}
+		std::cout << "have no enough features, exaustive mode" << std::endl;
+	}
+
+}
+
 shapeInfoProducer::shapeInfoProducer(cv::Mat &in_src, float in_magnitude, float in_threshold)
 {
 	this->srcImg = in_src;
@@ -137,7 +227,7 @@ void shapeInfoProducer::quantizedOrientations()
 	hysteresisGradient(magnitudeImg, quantized_angle, angle_ori, magnitude_value * magnitude_value);
 	//Mat temp_show_angle = this->quantized_angle.clone();
 	//Mat temp_show_angle_ori = this->angle_ori.clone();
-
+	// todo nms Ñ¡ÌØÕ÷µã
 
 }
 
