@@ -9,6 +9,8 @@
 #include <omp.h>
 #include <set>
 
+
+
 using namespace cv;
 using namespace std;
 
@@ -27,11 +29,13 @@ struct Feature
 };
 inline Feature::Feature(int _x, int _y, int _label) : x(_x), y(_y), label(_label) {}
 
+
 void Feature::read(const FileNode& fn)
 {
 	FileNodeIterator fni = fn.begin();
 	fni >> x >> y >> label;
 }
+
 
 struct Candidate
 {
@@ -432,7 +436,7 @@ void shapeInfoProducer::train()
 {
 
 	Mat smoothed;
-	static const int KERNEL_SIZE = 3;
+	static const int KERNEL_SIZE = 5;
 	cv::GaussianBlur(this->srcImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
 
 	cv::Mat sobel_dx, sobel_dy;
@@ -482,13 +486,14 @@ void shapeInfoProducer::train()
 class shapeMatch
 {
 public:
-	shapeMatch(cv::Mat in_testImg, float in_magnitude, float in_threshold, float in_iou, string in_feature_path);
+	shapeMatch(cv::Mat& in_testImg, float in_magnitude, float in_threshold, float in_iou, string in_feature_path);
+	~shapeMatch(void);
 	cv::Mat testImg;
 
-	cv::Mat magnitudeImg;			// 梯度幅值图
+	cv::Mat magnitudeImg;			// 测试图梯度幅值图
 	cv::Mat angle_ori;				// 角度图，0-360度
-	cv::Mat quantized_angle;		// 量化（0-360  ->  0-7）后的方向
-	cv::Mat spread_quantized;		// 广播后的方向
+	cv::Mat quantized_angle;		// 测试图量化（0-360  ->  0-7）后的方向
+	cv::Mat spread_quantized;		// 测试图广播后的方向
 	float threshold;
 	float magnitude;
 	float iou;
@@ -510,11 +515,11 @@ public:
 
 	void computeResponseMaps(const Mat& src, std::vector<Mat>& in_response_maps);
 
-	//void match();
 
 };
 
-shapeMatch::shapeMatch(cv::Mat in_testImg, float in_magnitude, float in_threshold, float in_iou, string in_feature_path)
+
+shapeMatch::shapeMatch(cv::Mat& in_testImg, float in_magnitude, float in_threshold, float in_iou, string in_feature_path)
 {
 	this->threshold = in_threshold;
 	this->feature_path = in_feature_path;
@@ -528,6 +533,10 @@ shapeMatch::shapeMatch(cv::Mat in_testImg, float in_magnitude, float in_threshol
 
 }
 
+shapeMatch::~shapeMatch(void)
+{
+	cout << "退出形状模板匹配" << endl;
+}
 
 void shapeMatch::load_shapeInfos()
 {
@@ -603,72 +612,173 @@ void shapeMatch::quantizedGradientOrientations()//Mat &magnitude, Mat &quantized
 	// threshold, and there is local agreement on the quantization.
 	this->quantized_angle = Mat::zeros(this->angle_ori.size(), CV_8U);
 	float strong_magnitude_value = this->magnitude * this->magnitude;
-	for (int r = 1; r < this->angle_ori.rows - 1; ++r)
+
+
+	auto subQuantiOri = [=](int startR, int endR, int cols, float magnitude_value, cv::Mat& _magnitudeImg, cv::Mat& _quantized_unfiltered, cv::Mat& _quantized_angle) 
 	{
-		float* mag_r = this->magnitudeImg.ptr<float>(r);
 
-		for (int c = 1; c < this->angle_ori.cols - 1; ++c)
+		for (int r = startR; r < endR; ++r)
 		{
-			if (mag_r[c] > strong_magnitude_value)
+			float* mag_r = _magnitudeImg.ptr<float>(r);
+
+			for (int c = 1; c < cols - 1; ++c)
 			{
-				// Compute histogram of quantized bins in 3x3 patch around pixel
-				int histogram[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-
-				uchar* patch3x3_row = &quantized_unfiltered(r - 1, c - 1); // 太巧妙了
-				histogram[patch3x3_row[0]]++;
-				histogram[patch3x3_row[1]]++;
-				histogram[patch3x3_row[2]]++;
-
-				patch3x3_row += quantized_unfiltered.step1();
-				histogram[patch3x3_row[0]]++;
-				histogram[patch3x3_row[1]]++;
-				histogram[patch3x3_row[2]]++;
-
-				patch3x3_row += quantized_unfiltered.step1();
-				histogram[patch3x3_row[0]]++;
-				histogram[patch3x3_row[1]]++;
-				histogram[patch3x3_row[2]]++;
-
-				// Find bin with the most votes from the patch
-				int max_votes = 0;
-				int index = -1;
-				for (int i = 0; i < 8; ++i)
+				if (mag_r[c] > magnitude_value)
 				{
-					if (max_votes < histogram[i])
-					{
-						index = i;
-						max_votes = histogram[i];
-					}
-				}
+					// Compute histogram of quantized bins in 3x3 patch around pixel
+					int histogram[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+					uchar* patch3x3_row = _quantized_unfiltered.ptr() + _quantized_unfiltered.step1() * (r - 1) + c - 1; // 太巧妙了
+					histogram[patch3x3_row[0]]++;
+					histogram[patch3x3_row[1]]++;
+					histogram[patch3x3_row[2]]++;
 
-				// Only accept the quantization if majority of pixels in the patch agree
-				static const int NEIGHBOR_THRESHOLD = 5;
-				if (max_votes >= NEIGHBOR_THRESHOLD)
-					this->quantized_angle.at<uchar>(r, c) = uchar(1 << index);
+					patch3x3_row += _quantized_unfiltered.step1();
+					histogram[patch3x3_row[0]]++;
+					histogram[patch3x3_row[1]]++;
+					histogram[patch3x3_row[2]]++;
+
+					patch3x3_row += _quantized_unfiltered.step1();
+					histogram[patch3x3_row[0]]++;
+					histogram[patch3x3_row[1]]++;
+					histogram[patch3x3_row[2]]++;
+
+					// Find bin with the most votes from the patch
+					int max_votes = 0;
+					int index = -1;
+					for (int i = 0; i < 8; ++i)
+					{
+						if (max_votes < histogram[i])
+						{
+							index = i;
+							max_votes = histogram[i];
+						}
+					}
+					// Only accept the quantization if majority of pixels in the patch agree
+					static const int NEIGHBOR_THRESHOLD = 5;
+					if (max_votes >= NEIGHBOR_THRESHOLD)
+						_quantized_angle.at<uchar>(r, c) = uchar(1 << index);
+				}
 			}
 		}
+	};
+
+
+	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	int Rows = this->angle_ori.rows - 2;
+	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
+	std::vector<std::thread> vec_threads;
+	cv::Mat temp_magnitudeImg(this->magnitudeImg);
+	cv::Mat temp_quantized_angle(this->quantized_angle);
+	for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
+	{
+		int startR = std::max(1, thread_i * per_thread_process_num);
+		int endR = std::min((thread_i + 1) * per_thread_process_num, Rows);
+		vec_threads.emplace_back([=, &temp_magnitudeImg, &quantized_unfiltered, &temp_quantized_angle]()
+		{ subQuantiOri(startR, endR, this->angle_ori.cols, strong_magnitude_value, temp_magnitudeImg, quantized_unfiltered, temp_quantized_angle);
+		});
 	}
+	for (auto& t : vec_threads)
+	{
+		t.join();
+	}
+	this->magnitudeImg = temp_magnitudeImg;
+	this->quantized_angle = temp_quantized_angle;
+
+
+
 }
 
+
+void countSimilarity(std::vector<std::vector<std::vector<Feature>>>& in_features, std::vector<std::pair<int, int>>& template_size, cv::Mat& quantized_angle,
+						std::vector<cv::Mat>& response_maps, cv::Mat& similarity, int _T, int pyramidIdx)
+{
+
+	// 循环滑窗匹配
+	auto subThreadCountSimilarity = [=](int threadIdx, int startRow, int endRow, std::vector<std::vector<std::vector<Feature>>>& in_features, std::vector<std::pair<int, int>>& template_size, 
+										cv::Mat& quantized_angle, std::vector<cv::Mat>& response_maps, cv::Mat& similarity, int _T, int pyramidIdx)
+	{
+		for (int r = startRow; r < endRow; r += _T)
+		{
+		//cout << "threadIdx :" << threadIdx << ", " <<  endl;
+			for (int c = 0; c < quantized_angle.cols - template_size[pyramidIdx].first; c += _T)
+			{
+				for (int t = 0; t < in_features[pyramidIdx].size(); t++) // 这个循环是模板级别的
+				{
+					int fea_size = (int)in_features[pyramidIdx][t].size();
+					int ori_sum = 0;
+					for (int f = 0; f < fea_size; f++) // 这个循环是特征级别的
+					{
+						Feature feat = in_features[pyramidIdx][t][f];
+						int label = feat.label;
+						auto _ori = (int)response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
+						ori_sum += (int)response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
+
+					}
+					if (ori_sum != 0)
+					{
+						float score = ori_sum / (4.0f * fea_size);
+						//cout << "fea_size: " << fea_size << ", ori_sum:" << ori_sum  << ", score:" << score << endl;
+						similarity.at<float>(r, c) = score;
+
+					}
+
+				}
+			}
+		}
+	
+	};
+
+	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	int Rows = (int)quantized_angle.rows - template_size[pyramidIdx].second;
+	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
+	cout <<"当前电脑最大线程数："<< max_thread_num << " ,  每个线程最多处理行数：" <<per_thread_process_num <<", 总行数："<< Rows << endl;
+	std::vector<std::thread> vec_threads;
+	for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
+	{
+		int startRow = thread_i * per_thread_process_num;
+		int endRow = std::min((thread_i + 1) * per_thread_process_num, Rows);
+		vec_threads.emplace_back([=, &in_features, &template_size, &quantized_angle, &response_maps, &similarity]()
+		{ subThreadCountSimilarity(thread_i, startRow, endRow, in_features, template_size,
+			quantized_angle, response_maps, similarity, _T, pyramidIdx);
+		});
+
+	}
+
+	for (auto& t : vec_threads)
+	{
+		t.join();
+	}
+
+}
 
 
 void shapeMatch::inference()
 {
 	auto t0 = getTickCount();
 	Mat smoothed;
-	static const int KERNEL_SIZE = 3;
+	static const int KERNEL_SIZE = 5;
 	cv::GaussianBlur(this->testImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
 
 	cv::Mat sobel_dx, sobel_dy;
+	auto t_sobel = cv::getTickCount();
 	cv::Sobel(smoothed, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
 	cv::Sobel(smoothed, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
 	this->magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
 	cv::phase(sobel_dx, sobel_dy, this->angle_ori, true);
 	// 量化到8个方向，再根据领域找出现次数最多的方向，主要输出结果是：this->quantized_angle
+	auto t_quatize = cv::getTickCount();
+	cout << "求梯度耗时：" << (t_quatize - t_sobel) / cv::getTickFrequency() << endl;;
 	quantizedGradientOrientations();
-	spread(this->quantized_angle, this->spread_quantized, 8);		// 4 是广播的领域尺度，4 或 8
 
+	auto t_spread = cv::getTickCount();
+	cout << "量化方向耗时：" << (t_spread - t_quatize) / cv::getTickFrequency() << endl;;
+	spread(this->quantized_angle, this->spread_quantized, 1);		// 4 是广播的领域尺度，4 或 8
+
+	auto t_response = cv::getTickCount();
+	cout << "广播方向耗时：" << (t_response - t_spread) / cv::getTickFrequency() << endl;;
 	computeResponseMaps(this->spread_quantized, this->response_maps);
+	auto t_response_out = cv::getTickCount();
+	cout << "计算响应图耗时：" << (t_response_out - t_response) / cv::getTickFrequency() << endl;;
 
 	auto t1 = getTickCount();
 	auto t01 = (t1 - t0) / getTickFrequency();
@@ -676,51 +786,18 @@ void shapeMatch::inference()
 	// 到这一步后基本需要的都可以了，开始匹配，输入：训练的特征点，8个响应图
 
 	cv::Mat similarity = cv::Mat::zeros(this->testImg.size(), CV_32FC1);
+	
 
-	// 循环滑窗匹配
+	for (int p = 0; p < in_features.size(); p++) //这个循环是金字塔级别的
 	{
-		for (int p = 0; p < this->in_features.size(); p++) //这个循环是金字塔级别的
-		{
-			omp_set_num_threads(4);
-#pragma omp parallel for
-			for (int r = 0; r < quantized_angle.rows - this->template_size[p].second; r += _T)
-			{
+		countSimilarity(this->in_features, this->template_size, this->quantized_angle, this->response_maps, similarity, _T, p);
 
-				for (int c = 0; c < quantized_angle.cols - this->template_size[p].first; c += _T)
-				{
-					for (int t = 0; t < this->in_features[p].size(); t++) // 这个循环是模板级别的
-					{
-						int fea_size = (int)this->in_features[p][t].size();
-						int ori_sum = 0;
-						// omp
-						for (int f = 0; f < fea_size; f++) // 这个循环是特征级别的
-						{
-							Feature feat = this->in_features[p][t][f];
-							int label = feat.label;
-							auto _ori = (int)this->response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
-							/*if (_ori != 0)
-							{
-								cout << "label:" << label << ", x:" << r + feat.y << ", y:" << c + feat.x << ", ori: " <<
-									 _ori << ", partial_sum: "<< ori_sum << endl;
-
-							}*/
-							ori_sum += (int)this->response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
-
-						}
-						if (ori_sum != 0)
-						{
-							float score = ori_sum / (4.0f * fea_size);
-							//cout << "fea_size: " << fea_size << ", ori_sum:" << ori_sum  << ", score:" << score << endl;
-							similarity.at<float>(r, c) = score;
-
-						}
-
-					}
-				}
-			}
-		}
 	}
 
+
+
+	auto t_count_similarity = cv::getTickCount();
+	cout << "计算相似度耗时：" << (t_count_similarity - t_response_out) / cv::getTickFrequency() << endl;
 	// 筛选极大值
 	class matchResult
 	{
@@ -760,23 +837,28 @@ void shapeMatch::inference()
 		results.emplace_back(_x, _y, similarity.at<float>(_y, _x));
 	}
 
+
 	// 过一遍IOU，要求大于一定的比例就抛弃
+	cv::Mat show_img, iouShowImg;
+	cvtColor(this->testImg, show_img, COLOR_GRAY2RGB);
+	
 	std::sort(results.begin(), results.end(), [&](matchResult a, matchResult b) {return a.score > b.score; });
-	std::vector<int> del_results_idx;
-	for (int n = 0; n < results.size(); n++)
+	auto _results = results;
+	std::vector<int> del_results_idx ;
+ 	for (int n = 0; n < results.size()-1; n++)
 	{
 		cv::Rect box_0(results[n].x, results[n].y, this->template_size[0].first, this->template_size[0].second);
-		for (int m = n + 1; m < results.size() - 1; m++)
+		for (int m = n + 1; m < results.size(); m++)
 		{
 			cv::Rect box_1(results[m].x, results[m].y, this->template_size[0].first, this->template_size[0].second);
-			float twoArea = 2 * this->template_size[0].first * this->template_size[0].second;
-			//cv::Point iouBoxLeftUp(std::max(box_0.x, box_1.x), std::max(box_0.y, box_1.y));
-			//cv::Point iouBoxRightLower(std::min(box_0.x + this->template_size[0].first, box_1.x), std::min(box_0.y, box_1.y) + this->template_size[0].second);
+			float twoArea = 2 * (float)this->template_size[0].first * (float)this->template_size[0].second;
 			int iouWidth = std::min(box_1.x + box_1.width, box_0.x + box_0.width) - std::max(box_0.x, box_1.x);
 			int iouHeight = std::min(box_1.y + box_1.height, box_0.y + box_0.height) - std::max(box_0.y, box_1.y);
-			float _iou = (iouWidth * iouHeight) / twoArea;
+			if (iouWidth < 0 || iouHeight < 0)
+				continue;
+			float _iou = (iouWidth * iouHeight) / (twoArea- (iouWidth * iouHeight));
 
-			if (_iou > this->iou)
+			if (_iou >= this->iou)
 			{
 				del_results_idx.emplace_back(m);
 			}
@@ -799,8 +881,6 @@ void shapeMatch::inference()
 	cout << "形状匹配总耗时：" << tall << endl;
 
 	// 可视化匹配结果的点
-	cv::Mat show_img;
-	cvtColor(this->testImg, show_img, COLOR_GRAY2RGB);
 	for (int i = 0; i < results.size(); i++)
 	{
 		int offset_x = results[i].x;
@@ -809,19 +889,19 @@ void shapeMatch::inference()
 		for (int f = 0; f < feat_size; f++)
 		{
 			Feature feat = this->in_features[0][0][f];
-
 			int x = offset_x + feat.x;
 			int y = offset_y + feat.y;
-			show_img.at<Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
+			//show_img.at<Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
+			cv::circle(show_img, cv::Point(x, y), 2, cv::Scalar(0, 0, 255));
 		}
-		putText(show_img, std::to_string(round(results[i].score * 1000) / 1000), cv::Point(results[i].x, results[i].y),
-			1, 5, cv::Scalar(0, 255, 0), 2);
+		putText(show_img, std::to_string(results[i].score).substr(0, 6), cv::Point(results[i].x, results[i].y), 1, 5, cv::Scalar(0, 255, 0), 3);
 
-		cout << "匹配到第" << i << "个目标的置信度: " << results[i].score << endl;
+		//cout << "匹配到第" << i << "个目标的置信度: " << std::to_string(results[i].score).substr(0, 6) << endl;
 
 	}
+	cout << "总匹配数量：" << results.size() << endl;
 
-	int newWindowWidth, newWindowHeight, fixed = 1000;
+	float newWindowWidth, newWindowHeight, fixed = 1000;
 	if (show_img.rows > show_img.cols)
 	{
 		float scale = (float)fixed / (float)show_img.rows;
@@ -836,11 +916,12 @@ void shapeMatch::inference()
 
 	}
 	cv::namedWindow("show_img", 0);
-	cv::resizeWindow("show_img", cv::Size(newWindowWidth, newWindowHeight));
+	cv::resizeWindow("show_img", cv::Size((int)newWindowWidth, (int)newWindowHeight));
 	cv::imshow("show_img", show_img);
 	cv::waitKey(0);
 
-	int a = 0;
+	cv::imwrite("F:\\1heils\\sheng_shape_match\\ganfa\\save.png", show_img);
+
 }
 
 
@@ -858,14 +939,13 @@ LUT3, LUT3, LUT3, LUT3, 4, 4, 4, 4, 4, 4, 4, 4 };
 void shapeMatch::computeResponseMaps(const Mat& src, std::vector<Mat>& in_response_maps)
 {
 
-
 	// Allocate response maps
 	response_maps.resize(8);
 	for (int i = 0; i < 8; ++i)
 		response_maps[i].create(src.size(), CV_8U);
 
-	Mat lsb4(src.size(), CV_8U);// 低位的四个方向，00001111
-	Mat msb4(src.size(), CV_8U);// 高位的四个方向，11110000
+	cv::Mat lsb4(src.size(), CV_8U);// 低位的四个方向，00001111
+	cv::Mat msb4(src.size(), CV_8U);// 高位的四个方向，11110000
 
 	for (int r = 0; r < src.rows; ++r)
 	{
@@ -882,39 +962,66 @@ void shapeMatch::computeResponseMaps(const Mat& src, std::vector<Mat>& in_respon
 		}
 	}
 
+	//auto t_lsb_start = cv::getTickCount();
 	{
 		uchar* lsb4_data = lsb4.ptr<uchar>();
 		uchar* msb4_data = msb4.ptr<uchar>();
 
 		// LUT is designed for 128 bits SIMD, so quite triky for others
-
 		// For each of the 8 quantized orientations...
-		for (int ori = 0; ori < 8; ++ori) {
-			uchar* map_data = response_maps[ori].ptr<uchar>();
-			const uchar* lut_low = SIMILARITY_LUT + 32 * ori;
-			for (int i = 0; i < src.rows * src.cols; ++i)
+		auto subFindMaxOri = [=](int startOriMap, int endOriMap, int rows, int cols, uchar* _lsb4_data, uchar* _msb4_data, std::vector<cv::Mat>& _response_maps)
+		{
+			for (int ori = startOriMap; ori < endOriMap; ++ori) 
 			{
-				// 查表，论文里面是通过不同方向求cos值，但这里不一样，用一个表（8个方向，每个方向有32种结果？），
-				// 求最大响应来表示测试图的方向广播图在不同方向下的响应；结果已经预算好放到表中，直接读结果就行
-				//
-				// 广播后的一个像素方向根据8bit前后分两份，然后每一份有16种可能的方向，一个像素的前后两个方向 查找 表中 方向对应的响应，
-				// 然后求两个方向最大的响应，得出该像素在8个方向中某个方向的响应值；
-				//  
-				map_data[i] = std::max(lut_low[lsb4_data[i]], lut_low[msb4_data[i] + 16]);
+				uchar* map_data = _response_maps[ori].ptr<uchar>();
+				const uchar* lut_low = SIMILARITY_LUT + 32 * ori;
+				for (int i = 0; i < rows * cols; ++i)
+				{
+					// 查表，论文里面是通过不同方向求cos值，但这里不一样，用一个表（8个方向，每个方向有32种结果？），
+					// 求最大响应来表示测试图的方向广播图在不同方向下的响应；结果已经预算好放到表中，直接读结果就行
+					//
+					// 广播后的一个像素方向根据8bit前后分两份，然后每一份有16种可能的方向，一个像素的前后两个方向 查找 表中 方向对应的响应，
+					// 然后求两个方向最大的响应，得出该像素在8个方向中某个方向的响应值；
+					//  
+					map_data[i] = std::max(lut_low[_lsb4_data[i]], lut_low[_msb4_data[i] + 16]);
 
-
+				}
 			}
+		};
 
+		int max_thread_num = std::min(8, (int)std::thread::hardware_concurrency() / 1);
+		int Rows = 8;
+		int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
+		std::vector<std::thread> vec_threads;
+		auto temp_response_maps = this->response_maps;
+		for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
+		{
+			int startR = thread_i * per_thread_process_num;
+			int endR = std::min((thread_i + 1) * per_thread_process_num, Rows);
+			vec_threads.emplace_back([=, &temp_response_maps]()
+			{ 
+				subFindMaxOri(startR, endR, src.rows, src.cols, lsb4_data, msb4_data, temp_response_maps);
+			});
 		}
+		for (auto& t : vec_threads)
+		{
+			t.join();
+		}
+		this->response_maps = temp_response_maps;
+
 
 
 	}
+	//auto t_lsb_end = cv::getTickCount();
+	//cout << "计算前后四个方向" << (t_lsb_end - t_lsb_start) / cv::getTickFrequency() << endl;
+
 }
 
 
 
 void shapeMatch::spread(const Mat& src, Mat& dst, int T)
 {
+	// T 代表广播方向的领域，如2X2，4x4,论文是8x8,实际使用中8太大了，会导致识别偏移；
 	// Allocate and zero-initialize spread (OR'ed) image
 	dst = Mat::zeros(src.size(), CV_8U);
 
@@ -933,36 +1040,60 @@ void shapeMatch::spread(const Mat& src, Mat& dst, int T)
 void shapeMatch::orUnaligned8u(const uchar* src, const int src_stride, uchar* dst, const int dst_stride,
 	const int width, const int height)
 {
-	for (int r = 0; r < height; ++r)
+	auto subOrSpread = [=](int startR, int endR, const uchar* src, const int src_stride, uchar* dst,
+							const int dst_stride, const int width)
 	{
-		int c = 0;
+		src += startR * src_stride;
+		dst += startR * dst_stride;
+		for (int r = startR; r < endR; ++r)
+		{
+			for (int c = 0; c < width; c++)
+				dst[c] |= src[c];
 
-		for (; c < width; c++)
-			dst[c] |= src[c];
+			// Advance to next row
+			src += src_stride;
+			dst += dst_stride;
+		}
+	};
 
-		// Advance to next row
-		src += src_stride;
-		dst += dst_stride;
+	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	int Rows = height;
+	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
+	std::vector<std::thread> vec_threads;
+	for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
+	{
+		int startR = thread_i * per_thread_process_num;
+		int endR = std::min((thread_i + 1) * per_thread_process_num, Rows);
+		vec_threads.emplace_back([=, &src, &dst]()
+		{ subOrSpread(startR, endR, src, src_stride, dst, dst_stride, width);
+		});
 	}
+	for (auto& t : vec_threads)
+	{
+		t.join();
+	}
+
 }
 
 
 void test_shape_match()
 {
-	string mode = "test";
-	//string mode = "train";
+	string mode = "test";  
+	 //string mode = "train";
 
 	if (mode == "train")
 	{
-		cv::Mat template_img = cv::imread("D:\\1_industrial\\sheng_shape_match/干法/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
-		shapeInfoProducer trainer(template_img, 128, 50, "D:\\1_industrial\\sheng_shape_match/干法/train_template_lower.yaml");
+		cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
+		shapeInfoProducer trainer(template_img, 64, 30, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
 		trainer.train();
 
 	}
+
+
 	else if (mode == "test")
 	{
-		cv::Mat test_img = cv::imread("D:\\1_industrial\\sheng_shape_match/干法/test.png", 0);	// sl_template_test     sl_test_4
-		shapeMatch tester(test_img, 30, 0.93f, 0.01, "D:\\1_industrial\\sheng_shape_match/干法/train_template_up.yaml");
+		cv::Mat test_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/test_3.png", 0);	// sl_template_test     sl_test_4
+		shapeMatch tester(test_img, 30, 0.9f, 0.1, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
 		tester.inference();
 
 	}
@@ -971,730 +1102,14 @@ void test_shape_match()
 }
 
 
-void SL()
-{
-	cv::Mat test_img = cv::imread("D:\\1_industrial\\sheng_shape_match/sl_template.png", 0);
-
-	Mat smoothed;
-	static const int KERNEL_SIZE = 7;
-	cv::GaussianBlur(test_img, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
-
-	cv::Mat sobel_dx, sobel_dy, magnitudeImg, angle_ori;
-	cv::Sobel(smoothed, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
-	cv::Sobel(smoothed, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
-	magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
-	cv::phase(sobel_dx, sobel_dy, angle_ori, true);
-	//cv::Mat angle_ori_2;
-	//phase(sobel_dy, sobel_dx, angle_ori_2, true);
-
-
-
-
-}
-
-
-
-
-void SL_2()
-{
-	//cv::Mat test_img = cv::imread("D:\\1_industrial\\sheng_shape_match/sl_template.png", 0);
-	cv::String folder = "D:\\1_industrial\\sheng_shape_match\\test_2_v\\";
-	//cv::String folder = "D:\\1_industrial\\sheng_shape_match\\cut\\";
-	std::string hv = "v";
-	//cv::String folder = "D:\\1_industrial\\sheng_shape_match\\h_img\\";
-	//std::string hv = "h";
-	std::vector<cv::String> imagePathList;
-	cv::glob(folder, imagePathList);
-
-	int sample_num = 3;							// 采样点的法向量方向前后各采样指定个数；
-	float dist_threshold = 12.f;				// 两点的距离要大于一定的值才可以进行采样
-	int sample_interval = 3;					// 长线段间隔采样,单位为像素
-	for (int path_index = 0; path_index < imagePathList.size(); path_index++)
-	{
-		cv::Mat test_img = cv::imread(imagePathList[path_index], 0);
-
-		cv::Mat show_img = test_img.clone();
-		cvtColor(show_img, show_img, COLOR_GRAY2RGB);
-		const int len = 205;
-		////double org_x[len] = { 20.623625796954094,21.98200789953385, 211.47631120940991,215.5514575171492, 216.82217657321655, 172.90373769225675, 163.6577505594231,
-		//		154.41176342658946, 144.32523200895275, 137.39074165932752, 136.55019737452446, 142.43400736814587, 152.52053878578258, 161.55638984741546,
-		//		223.54653085164102, 230.06074905886473, 230.06074905886473, 222.70598656683796,12.990187508474849, 6.8962414436526736, 5.84556108764885,
-		//		11.30909893886873, 61.53161995585148, 85.27699600153788, 92.63175849356465,97.675024202383, 101.03720134159524, 100.19665705679218,
-		//		96.62434384637918, 91.58107813756082, 86.11754028634094, 70.9877431598859,65.94447745106754 };
-
-		////double org_y[len] = { 71.03555228163074, 26.548538422143707, 26.548538422143707, 29.26530262730322, 72.04303282955664, 98.09990565845146, 94.94786459043999
-		//	 , 90.32487102402317, 94.10732030563693, 102.09249101126599, 113.43983885610729 , 121.0047374193348, 125.83786705695239, 123.94664241614551
-		//	 , 86.96269388481093, 79.60793139278417, 20.139423242967773, 12.574524679740247, 12.994796822141776 , 20.559695385369302, 75.40520996876887
-		//	 , 84.86133317280328, 115.96147171051645, 125.2074588433501 , 122.89596206014168, 118.0628324225241, 112.80943064250499 , 105.0343960080767
-		//	 , 98.09990565845146 , 93.6870481632354, 91.37555138002699, 98.09990565845146, 99.57085815685681 };
-
-
-		double org_x[len] = { 144.08656311035156, 304.819580078125, 304.819580078125, 308.8641357421875, 312.8098449707031, 316.6409912109375, 320.3423767089844, 323.8995056152344, 327.2974853515625, 330.5204162597656, 333.55352783203125, 333.55242919921875, 365.96661376953125, 365.96661376953125, 365.96783447265625, 369.78509521484375, 373.17974853515625, 376.1140441894531, 378.5489196777344, 378.5406188964844, 413.0841369628906, 413.0841369628906, 413.09259033203125, 414.8156433105469, 416.080810546875, 416.8597412109375, 417.126220703125, 416.891845703125, 416.20465087890625, 415.087158203125, 413.56280517578125, 411.652587890625, 409.3809509277344, 406.7704162597656, 403.8433837890625, 400.6230773925781, 397.1322326660156, 393.393310546875, 389.4289855957031, 385.2629699707031, 380.9165954589844, 376.4135437011719, 371.7771911621094, 371.7771911621094, 304.00494384765625, 304.00494384765625, 304.0049743652344, 303.7215270996094, 299.4565124511719, 295.4841003417969, 291.8894958496094, 288.7574768066406, 286.17315673828125, 284.2216796875, 282.9893798828125, 282.5586853027344, 282.9893798828125, 284.2216796875, 286.17315673828125, 288.7574768066406, 291.8894958496094, 295.4841003417969, 299.4565124511719, 303.7215270996094, 307.7543640136719, 311.5312805175781, 314.9796142578125, 318.0284423828125, 318.0281982421875, 323.25469970703125, 329.166748046875, 332.34063720703125, 335.6404113769531, 339.049560546875, 342.5541687011719, 342.5541687011719, 371.7771911621094, 371.7771911621094, 375.4326477050781, 378.83795166015625, 381.91937255859375, 384.60406494140625, 386.8189697265625, 388.49139404296875, 389.54791259765625, 389.91650390625, 389.4985656738281, 388.3039855957031, 388.3002624511719, 388.3002624511719, 353.7563781738281, 353.7597351074219, 351.6121520996094, 348.727294921875, 348.72711181640625, 348.72711181640625, 316.31292724609375, 316.31329345703125, 313.810791015625, 311.0288391113281, 308.0157165527344, 304.819580078125, 304.819580078125, 144.08656311035156, 144.08656311035156, 140.890380859375, 137.8771209716797, 135.09535217285156, 132.59278869628906, 132.59315490722656, 132.59315490722656, 100.17892456054688, 100.17863464355469, 97.29438781738281, 95.14708709716797, 95.1494369506836, 95.1494369506836, 60.60572052001953, 60.603302001953125, 59.40739059448242, 58.989013671875, 59.3575439453125, 60.4145622253418, 62.086997985839844, 64.30201721191406, 66.98666381835938, 70.06792449951172, 73.47279357910156, 77.12850952148438, 77.12850952148438, 106.35210418701172, 106.35210418701172, 109.85598754882812, 113.26560974121094, 116.56507873535156, 119.73963165283203, 125.6511001586914, 130.87786865234375, 130.87777709960938, 130.87777709960938, 130.877685546875, 133.9263458251953, 137.37498474121094, 141.1513671875, 145.1843719482422, 149.44935607910156, 153.4217987060547, 157.01661682128906, 160.14874267578125, 162.73301696777344, 164.6841583251953, 165.9173583984375, 166.3470001220703, 165.9173583984375, 164.6841583251953, 162.73301696777344, 160.14874267578125, 157.01661682128906, 153.4217987060547, 149.44935607910156, 145.1843719482422, 144.89932250976562, 144.9012451171875, 77.12850952148438, 77.12850952148438, 72.4919204711914, 67.98919677734375, 63.643218994140625, 59.47675704956055, 55.51264953613281, 51.77360153198242, 48.282508850097656, 45.06208801269531, 42.13517761230469, 39.524574279785156, 37.2530403137207, 35.34343719482422, 33.81852722167969, 32.70116424560547, 32.013851165771484, 31.779699325561523, 32.04578399658203, 32.82549285888672, 34.09144973754883, 35.81560516357422, 35.821380615234375, 70.36512756347656, 70.36512756347656, 70.35928344726562, 72.79399871826172, 75.7276382446289, 79.12212371826172, 82.938232421875, 82.93912506103516, 115.35327911376953, 115.35327911376953, 115.35238647460938, 118.38570404052734, 121.60863494873047, 125.00626373291016, 128.5633087158203, 132.26507568359375, 136.09616088867188, 140.04164123535156, 144.08656311035156 };
-		double org_y[len] = { 209.65289306640625, 209.65289306640625, 209.65289306640625, 209.47731018066406, 208.96087646484375, 208.11834716796875, 206.9646453857422, 205.51478576660156, 203.7829132080078, 201.78440856933594, 199.5341796875, 199.53341674804688, 173.3621368408203, 173.3621368408203, 173.36300659179688, 169.90139770507812, 166.03378295898438, 161.79798889160156, 157.23233032226562, 157.22364807128906, 82.05640411376953, 82.05640411376953, 82.0650405883789, 77.73250579833984, 73.19355773925781, 68.47571563720703, 63.60598373413086, 59.03496551513672, 54.59579086303711, 50.311214447021484, 46.20361328125, 42.29551696777344, 38.6092643737793, 35.16755294799805, 31.992589950561523, 29.107074737548828, 26.533353805541992, 24.293882369995117, 22.411287307739258, 20.907936096191406, 19.806243896484375, 19.128786087036133, 18.897903442382812, 18.897903442382812, 18.897903442382812, 18.897903442382812, 18.897878646850586, 18.8961238861084, 19.319929122924805, 20.53562355041504, 22.459228515625, 25.006906509399414, 28.09470558166504, 31.638681411743164, 35.555084228515625, 39.759864807128906, 43.964630126953125, 47.88092803955078, 51.425010681152344, 54.51276779174805, 57.0604362487793, 58.98408508300781, 60.19987106323242, 60.62370681762695, 60.24531936645508, 59.15715789794922, 57.42979049682617, 55.13395309448242, 55.13370132446289, 51.197914123535156, 48.2368278503418, 47.15965270996094, 46.371437072753906, 45.8874626159668, 45.722808837890625, 45.722808837890625, 45.722808837890625, 45.722808837890625, 46.08612823486328, 47.12813186645508, 48.77692794799805, 50.96064758300781, 53.60737228393555, 56.64508056640625, 60.00199890136719, 63.60598373413086, 67.44107818603516, 70.98968505859375, 70.98625183105469, 70.98625183105469, 146.15357971191406, 146.156982421875, 149.67752075195312, 152.60916137695312, 152.60887145996094, 152.60887145996094, 178.78001403808594, 178.78021240234375, 180.47982788085938, 181.7524871826172, 182.55108642578125, 182.8279266357422, 182.8279266357422, 182.8279266357422, 182.8279266357422, 182.55108642578125, 181.75250244140625, 180.4798583984375, 178.7803497314453, 178.78001403808594, 178.78001403808594, 152.60887145996094, 152.6092529296875, 149.67835998535156, 146.15896606445312, 146.15357971191406, 146.15357971191406, 70.98625183105469, 70.99162292480469, 67.44214630126953, 63.60598373413086, 60.00199890136719, 56.64508056640625, 53.60737228393555, 50.96064758300781, 48.77692794799805, 47.12813186645508, 46.08612823486328, 45.722808837890625, 45.722808837890625, 45.722808837890625, 45.722808837890625, 45.8874626159668, 46.371437072753906, 47.159645080566406, 48.2368049621582, 51.19789505004883, 55.133663177490234, 55.13385009765625, 55.13385009765625, 55.133975982666016, 57.429813385009766, 59.15715789794922, 60.24531936645508, 60.62370681762695, 60.19987106323242, 58.98408508300781, 57.0604362487793, 54.51276779174805, 51.425010681152344, 47.88092803955078, 43.964630126953125, 39.759864807128906, 35.555084228515625, 31.638681411743164, 28.09470558166504, 25.006906509399414, 22.459228515625, 20.53562355041504, 19.319929122924805, 18.8961238861084, 18.897891998291016, 18.897903442382812, 18.897903442382812, 18.897903442382812, 19.128786087036133, 19.806243896484375, 20.907936096191406, 22.411287307739258, 24.293882369995117, 26.533353805541992, 29.107074737548828, 31.992589950561523, 35.16755294799805, 38.6092643737793, 42.29551696777344, 46.20361328125, 50.311214447021484, 54.59579086303711, 59.03496551513672, 63.60598373413086, 68.4771499633789, 73.1963882446289, 77.73646545410156, 82.07012176513672, 82.05640411376953, 157.22364807128906, 157.22364807128906, 157.2373504638672, 161.80174255371094, 166.0362091064453, 169.90255737304688, 173.3631134033203, 173.3621368408203, 199.53341674804688, 199.53341674804688, 199.53443908691406, 201.78448486328125, 203.78298950195312, 205.5148162841797, 206.9646759033203, 208.11834716796875, 208.9608917236328, 209.47731018066406, 209.65289306640625 };
-
-		float templateImg_width = test_img.cols, templateImg_height = test_img.rows;
-
-		std::vector<float> x, y;
-		if (hv == "h")
-		{
-			for (int idx = 0; idx < len; idx++)
-			{
-				y.emplace_back(org_y[idx]);
-				x.emplace_back(org_x[idx]);
-			}
-		}
-		else if (hv == "v")
-		{
-			for (int idx = 0; idx < len; idx++)
-			{
-				y.emplace_back(templateImg_height - org_y[idx]);
-				x.emplace_back(org_x[idx]);
-			}
-		}
-		else
-		{
-			cout << "不匹配的参数：h or v" << endl;
-		}
-
-		bool is_line = false;
-		//bool is_line = true;
-
-		// 画线
-		if (is_line)
-		{
-			for (int i = 0; i < 32; i++)
-			{
-				cv::Point2f c_1 = cv::Point2f(x[i], y[i]);
-				cv::Point2f c_2 = cv::Point2f(x[i + 1], y[i + 1]);
-				cv::line(show_img, c_1, c_2, cv::Scalar(0, 255, 0), 1);
-			}
-			// LAST line
-			cv::Point2f c_1 = cv::Point2f(x[0], y[0]);
-			cv::Point2f c_2 = cv::Point2f(x[32], y[32]);
-			cv::line(show_img, c_1, c_2, cv::Scalar(0, 255, 0), 1);
-
-		}
-		else
-		{
-			//画点
-			for (int i = 0; i < len; i++)
-			{
-				cv::Point2f c_1(x[i], y[i]);
-				//cv::circle(show_img, c_1, 1, cv::Scalar(0, 0, 255));
-				//cv::putText(show_img, std::to_string(i), c_1, 1, 0.4, cv::Scalar(0, 240, 0));
-			}
-
-		}
-
-		// 顺络框偏移思路：1.每一个点的法向量（垂直）上（一定的领域内）找梯度最大的点，即为模板点对应在测试图片上的点
-
-		auto t_1 = getTickCount();
-		Mat smoothed;
-		static const int KERNEL_SIZE = 7;
-		cv::GaussianBlur(test_img, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
-
-		cv::Mat sobel_dx, sobel_dy, magnitudeImg, angle_ori;
-		cv::Sobel(smoothed, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
-		cv::Sobel(smoothed, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
-		magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
-		//cv::phase(sobel_dx, sobel_dy, angle_ori, true);
-		//cv::Mat angle_ori_2;
-		//cv::phase(sobel_dy, sobel_dx, angle_ori_2, true);
-		auto t_2 = getTickCount();
-		cout << "梯度提取耗时：" << (t_2 - t_1) / cv::getTickFrequency() << endl;
-
-		//0225新思路：
-		// 1.判断两点的线是否大于一定的距离，大于就在直线上的线段采样
-		// 2.判断斜率，有些斜率是水平或垂直的，得指定k, b，
-		// 
-		// 
-		// 两点为线，求这根线第一点的法向量，也就是求K值斜率
-		std::vector<cv::Point2f> org_points, dst_points;
-		int64 t_3;
-		//#pragma omp parallel for
-		//#pragma omp parallel num_threads(2)
-		for (int i = 0; i < len; i++)
-		{
-			//cout << "模板点序号: " << i << endl;
-			cv::Point2f c_1, c_2;
-			// 下面这个判断是为了把全部点都用起来，第一个和最后一个
-			if (i < len - 1)
-			{
-				c_1 = cv::Point2f(x[i], y[i]);
-				c_2 = cv::Point2f(x[i + 1], y[i + 1]);
-			}
-			else if (i == len - 1)
-			{
-				c_1 = cv::Point2f(x[len - 1], y[len - 1]);
-				c_2 = cv::Point2f(x[0], y[0]);
-			}
-			// 确保x1在上方，即c_1.y > c_2.y
-			if (c_1.y > c_2.y)
-			{
-				auto _temp_c_2 = c_2;
-				c_2 = c_1;
-				c_1 = _temp_c_2;
-			}
-
-			// 先判断距离
-			cv::circle(show_img, c_1, 1, cv::Scalar(0, 0, 255));
-			cv::circle(show_img, c_2, 1, cv::Scalar(0, 0, 255));
-			float point_dist = std::sqrt((c_2.x - c_1.x) * (c_2.x - c_1.x) + (c_2.y - c_1.y) * (c_2.y - c_1.y));
-
-			if (point_dist > dist_threshold)
-			{
-				float fenzi = c_2.y - c_1.y;
-				float fenmu = c_2.x - c_1.x;
-				//cout << "K: " << k << endl;
-				if (abs(fenmu) < 0.6)
-				{
-					cout << "垂直线段" << endl;
-					// 原本是垂直的线段，其法向量就是水平的，采样点就是水平的，x方向不变,y方向变
-					for (int sample_idx = 1; sample_idx < point_dist / sample_interval; sample_idx++)
-					{
-						float _y = c_1.y + sample_idx * sample_interval;
-
-						std::vector<cv::Point2f> sample_points;		// 采样点,一次采样点出一个结果，加到org_points 和dst_points
-						std::vector<float> sample_mag;				// 采样点对应的梯度幅值
-						for (int sx = 0; sx < sample_num; sx++)
-						{
-							float x1 = c_1.x - sx;
-							float x2 = c_1.x + sx;
-
-							if (0 <= x1 && x1 < magnitudeImg.cols)
-							{
-								cv::Point2f _sp(x1, _y);
-								sample_points.emplace_back(_sp);
-								sample_mag.emplace_back(magnitudeImg.at<float>(_y, x1));
-								show_img.at<Vec3b>(_y, x1) = cv::Vec3b(180, 0, 0);
-							}
-							if (0 <= x2 && x2 < magnitudeImg.cols)
-							{
-								cv::Point2f _sp(x2, _y);
-								sample_points.emplace_back(_sp);
-								sample_mag.emplace_back(magnitudeImg.at<float>(_y, x2));
-								show_img.at<Vec3b>(_y, x2) = cv::Vec3b(180, 0, 0);
-							}
-						}
-						int max_idx = std::max_element(sample_mag.begin(), sample_mag.end()) - sample_mag.begin();
-						org_points.emplace_back(sample_points[0]);
-						dst_points.emplace_back(sample_points[max_idx]);
-						show_img.at<Vec3b>(sample_points[0].y, sample_points[0].x) = cv::Vec3b(255, 0, 255);
-						show_img.at<Vec3b>(sample_points[max_idx].y, sample_points[max_idx].x) = cv::Vec3b(255, 255, 255);
-					}
-
-				}
-				else if (abs(fenzi) < 0.6)
-				{
-					cout << "水平线段" << endl;
-					// 原本是水平的线段，其法向量就是垂直，采样点就是垂直的，y方向不变
-					int sample_base_num = point_dist > sample_interval ? point_dist / sample_interval : 1;
-					//int new_sample_inter
-					for (int sample_idx = 1; sample_idx <= sample_base_num; sample_idx++)
-					{
-						float add_or_sub = c_1.x > c_2.x ? -1.0f : 1.0f;
-						float _x = c_1.x + sample_idx * sample_interval * add_or_sub;
-
-						std::vector<cv::Point2f> sample_points;		// 采样点,一次采样点出一个结果，加到org_points 和dst_points
-						std::vector<float> sample_mag;				// 采样点对应的梯度幅值
-						for (int sx = 0; sx < sample_num; sx++)
-						{
-							float y1 = c_1.y - sx;
-							float y2 = c_1.y + sx;
-
-							if (0 <= y1 && y1 < magnitudeImg.rows)
-							{
-								cv::Point2f _sp(_x, y1);
-								sample_points.emplace_back(_sp);
-								sample_mag.emplace_back(magnitudeImg.at<float>(y1, _x));
-								show_img.at<Vec3b>(y1, _x) = cv::Vec3b(180, 0, 0);
-							}
-							if (0 <= y2 && y2 < magnitudeImg.rows)
-							{
-								cv::Point2f _sp(_x, y2);
-								sample_points.emplace_back(_sp);
-								sample_mag.emplace_back(magnitudeImg.at<float>(y2, _x));
-								show_img.at<Vec3b>(y2, _x) = cv::Vec3b(180, 0, 0);
-							}
-						}
-						int max_idx = std::max_element(sample_mag.begin(), sample_mag.end()) - sample_mag.begin();
-						org_points.emplace_back(sample_points[0]);
-						dst_points.emplace_back(sample_points[max_idx]);
-						show_img.at<Vec3b>(sample_points[0].y, sample_points[0].x) = cv::Vec3b(255, 0, 255);
-						show_img.at<Vec3b>(sample_points[max_idx].y, sample_points[max_idx].x) = cv::Vec3b(255, 255, 255);
-					}
-
-				}
-				else
-				{
-					// 正常的倾斜线段，根据斜率k和截距b 获得新的坐标
-					float k = fenzi / fenmu;
-					float b = c_1.y - c_1.x * k;	// 需要原始的向量参数：斜率k，截距b，去计算新的采样基准点；前面特殊的垂直水平情况不需要，直接固定x或y坐标
-					// 两条垂直相交直线的斜率相乘积为-1；
-					//cout << "正常线段, k: "<< k << endl;
-					float new_k = -1 / k;
-
-					// 确定如何制作采样点：线段有偏横和偏竖着的，偏横的用x坐标采样，偏竖着用y坐标采样
-					int sample_base_num = point_dist > sample_interval ? point_dist / sample_interval : point_dist / 2;
-					float x_dist = std::abs(c_1.x - c_2.x);
-					float y_dist = std::abs(c_1.y - c_2.y);
-					std::string statu = x_dist > y_dist ? "x" : "y";
-					float x_or_y_interval = x_dist > y_dist ? x_dist / sample_base_num : y_dist / sample_base_num;
-					for (int sample_idx = 1; sample_idx <= sample_base_num; sample_idx++)
-					{
-						// 先确立采样基准点，根据第一次的k,b
-						float _x, _y;
-						x_or_y_interval = sample_base_num == 1 ? x_or_y_interval / 2 : x_or_y_interval;
-
-						if (statu == "x")
-						{
-							// 取小的是因为出现这种情况：c_2在左下方，c_1在右上方，直接拿c_1
-							_x = std::min(c_1.x, c_2.x) + sample_idx * x_or_y_interval;
-							_y = _x * k + b;
-						}
-						else if (statu == "y")
-						{
-							_y = c_1.y + sample_idx * x_or_y_interval;
-							_x = (_y - b) / k;
-						}
-						//show_img.at<Vec3b>(_y, _x) = cv::Vec3b(255, 0, 0);
-						float new_b = _y - _x * new_k;		// 采样基准点变了会导致截距变，但k不变
-
-						std::vector<cv::Point2f> sample_points;		// 采样点,一次采样点出一个结果，加到org_points 和dst_points
-						std::vector<double> sample_mag;				// 采样点对应的梯度幅值
-						std::vector<cv::Point2f> vector_xy;
-						cv::Point2f base_sample_vector_xy(sobel_dx.at<float>(_y, _x), sobel_dy.at<float>(_y, _x));
-						for (int sx = 0; sx < sample_num; sx++)
-						{
-							float x1 = _x - sx;
-							float y1 = x1 * new_k + new_b;
-
-							float x2 = _x + sx;
-							float y2 = x2 * new_k + new_b;
-
-							if ((0 <= y1 && y1 < magnitudeImg.rows) && (0 <= x1 && x1 < magnitudeImg.cols))
-							{
-								cv::Point2f _sp(x1, y1);
-								// 添加向量
-								cv::Point2f _sample_vector_xy(sobel_dx.at<float>(y1, x1), sobel_dy.at<float>(y1, x1));
-								vector_xy.emplace_back(_sample_vector_xy);
-
-								sample_points.emplace_back(_sp);
-								sample_mag.emplace_back(magnitudeImg.at<float>(y1, x1));
-								show_img.at<Vec3b>(y1, x1) = cv::Vec3b(180, 0, 0);
-							}
-							if (0 <= y2 && y2 < magnitudeImg.rows && (0 <= x2 && x2 < magnitudeImg.cols))
-							{
-								cv::Point2f _sp(x2, y2);
-								// 添加向量
-								cv::Point2f _sample_vector_xy(sobel_dx.at<float>(y2, x2), sobel_dy.at<float>(y2, x2));
-								vector_xy.emplace_back(_sample_vector_xy);
-
-								sample_points.emplace_back(_sp);
-								sample_mag.emplace_back(magnitudeImg.at<float>(y2, x2));
-								show_img.at<Vec3b>(y2, x2) = cv::Vec3b(180, 0, 0);
-							}
-						}
-						// 用基准点的向量和采样点的所有向量点乘内积，求最大的
-						std::vector<float> inner;
-						for (auto& s : vector_xy)
-						{
-							float _inner = base_sample_vector_xy.x * s.x + base_sample_vector_xy.y * s.y;
-							inner.emplace_back(_inner);
-						}
-
-						int max_idx = std::max_element(inner.begin(), inner.end()) - inner.begin();
-						//int max_idx = std::max_element(sample_mag.begin(), sample_mag.end()) - sample_mag.begin();
-						org_points.emplace_back(sample_points[0]);
-						dst_points.emplace_back(sample_points[max_idx]);
-						show_img.at<Vec3b>(sample_points[0].y, sample_points[0].x) = cv::Vec3b(255, 0, 255);
-						show_img.at<Vec3b>(sample_points[max_idx].y, sample_points[max_idx].x) = cv::Vec3b(255, 255, 255);
-					}
-				}
-
-			}
-			else
-			{
-				//cout << "两点距离不满足采样条件，跳过，两点距离："<< point_dist << endl;
-				continue;
-
-			}
-
-		}
-
-		std::vector<cv::Point2f> org_xy;
-		for (int i = 0; i < len; i++)
-		{
-			org_xy.emplace_back(x[i], y[i]);
-		}
-
-
-		t_3 = getTickCount();
-		cout << "提取法向量采样基准点耗时：" << (t_3 - t_2) / cv::getTickFrequency() << endl;
-
-
-		// 透视变换
-		//org_points.insert(org_points.end(), org_xy.begin(), org_xy.end());
-		//dst_points.insert(dst_points.end(), org_xy.begin(), org_xy.end());
-		//Mat m = findHomography(org_points, dst_points, 16, 0);	// RANSAC
-		cv::Mat m;
-		for (int f = 0; f < 100; f++)
-		{
-			auto t_f0 = getTickCount();
-			m = findHomography(org_points, dst_points, 8);	// RANSAC
-			auto t_f1 = getTickCount();
-			cout << f << " , 计算单应性变换矩阵耗时：" << (t_f1 - t_f0) / getTickFrequency() << endl;
-		}
-		std::vector<cv::Point2f> trans_points;
-		trans_points.resize(org_xy.size());
-		perspectiveTransform(org_xy, trans_points, m);
-		auto t_4 = getTickCount();
-		cout << "透视变换耗时：" << (t_4 - t_3) / cv::getTickFrequency() << endl;
-
-		auto t_cost = (getTickCount() - t_1) / getTickFrequency();
-		cout << "----------------------- 校正一次耗时：" << t_cost << endl;
-		cv::Mat show_img_2, show_img_3;
-		cvtColor(test_img, show_img_2, COLOR_GRAY2BGR);
-		show_img_3 = show_img_2.clone();
-		{
-			for (int i = 0; i < trans_points.size() - 1; i++)
-			{
-				//画透视变换后的
-				cv::line(show_img_2, trans_points[i], trans_points[i + 1], cv::Scalar(0, 255, 0), 1);
-				//画原始的
-				cv::line(show_img_3, org_xy[i], org_xy[i + 1], cv::Scalar(0, 255, 255), 1);
-			}
-			// LAST line， 透视后的
-			cv::line(show_img_2, trans_points[0], trans_points[trans_points.size() - 1], cv::Scalar(0, 255, 0), 1);
-			// LAST line 原始
-			cv::line(show_img_3, org_xy[0], org_xy[org_xy.size() - 1], cv::Scalar(0, 255, 255), 1);
-
-		}
-
-	}
-
-}
-
-//int count_sobel(uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint8_t e, uint8_t f) {
-//
-//	return (((int)a + 2 * (int)b + (int)c) - ((int)d + 2 * (int)e + (int)f));
-//
-//}
-
-
-//核函数
-void sobel_gpu_fun(int pix, uint8_t* img_in, float* sobelx, float* sobely, float* sobel_out, int img_w, int img_h)
-{
-	//int row = blockDim.y * blockIdx.y + threadIdx.y;
-	//int col = blockDim.x * blockIdx.x + threadIdx.x;
-	int row = pix / img_w;
-	int col = pix % img_w;
-	auto count_sobel = [=](uint8_t a, uint8_t b, uint8_t c, uint8_t d, uint8_t e, uint8_t f)
-	{
-		return (((int)a + 2 * (int)b + (int)c) - ((int)d + 2 * (int)e + (int)f));
-	};
-	if ((row >= 1) && (row < (img_h - 1)) && (col >= 1) && (col < (img_w - 1)))
-	{
-		uint8_t x1, x2, x3, x4, x6, x7, x8, x9;
-		x1 = img_in[(row - 1) * img_w + (col - 1)];
-		x2 = img_in[(row - 1) * img_w + col];
-		x3 = img_in[(row - 1) * img_w + col + 1];
-		x4 = img_in[row * img_w + col - 1];
-		x6 = img_in[row * img_w + col + 1];
-		x7 = img_in[(row + 1) * img_w + col - 1];
-		x8 = img_in[(row + 1) * img_w + col];
-		x9 = img_in[(row + 1) * img_w + col + 1];
-
-		float dfdx = count_sobel(x1, x4, x7, x3, x6, x9);
-		float dfdy = count_sobel(x1, x2, x3, x7, x8, x9);
-		float gradient = sqrtf(dfdy * dfdy + dfdx * dfdx);
-
-		sobelx[row * img_w + col] = (float)dfdx;
-		sobely[row * img_w + col] = (float)dfdy;
-		sobel_out[row * img_w + col] = (float)gradient;
-	}
-}
-
-
-//double gaussFunc1D(int x, double sigma)
-//{
-//	double A = 1.0 / (sigma * sqrt(2 * 3.141592653));
-//	double index = -1.0 * ((double)x * (double)x) / (2 * (double)sigma * (double)sigma);
-//	return A * exp(index);
-//}
-
-
-void getKernal(double* weight)
-{
-	int radius = 1;
-	double sum = 0;
-	double sigma = 1.0f;
-	auto gaussFunc1D = [=](int x, double sigma)
-	{
-		double A = 1.0 / (sigma * sqrt(2 * 3.141592653));
-		double index = -1.0 * ((double)x * (double)x) / (2 * (double)sigma * (double)sigma);
-		return A * exp(index);
-	};
-	// 获取权值空间weight[]
-	for (int i = 0; i < 2 * radius + 1; i++)
-	{
-		weight[i] = gaussFunc1D(i - radius, sigma);
-		sum += weight[i];
-	}
-	// 归一化
-	for (int i = 0; i < 2 * radius + 1; i++)
-	{
-		weight[i] /= sum;
-	}
-}
-
-
-
-void simulation_cuda_sobel()
-{
-
-	cv::String folder = "D:\\1_industrial\\sheng_shape_match\\test_2_v\\";
-	std::vector<cv::String> imagePathList;
-	cv::glob(folder, imagePathList);
-	// 高斯模糊矩阵 ：
-	//float guassMatrix[3][3] = { {0.0947416, 0.118318, 0.0947416},{0.118318, 0.147761, 0.118318},{0.0947416, 0.118318, 0.0947416} };
-
-
-	for (int path_index = 0; path_index < imagePathList.size(); path_index++)
-	{
-		cv::Mat test_img = cv::imread(imagePathList[path_index], 0);
-
-		//Mat smoothed;
-		//static const int KERNEL_SIZE = 3;
-		//cv::GaussianBlur(test_img, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
-		//cv::Mat sobel_dx, sobel_dy, magnitudeImg, angle_ori;
-		//cv::Sobel(test_img, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
-		//cv::Sobel(test_img, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
-		//magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
-
-
-		// 模拟cuda 高斯模糊 -> sobel -> 根据轮廓找点 -> 透视变换矩阵M
-		int gaussKernelSize = 3;
-		cv::Mat selfSmoothed = test_img.clone();
-
-		auto t_0 = getTickCount();
-		// 高斯模糊
-		{
-			auto gaussWeight = std::make_unique<double[]>(gaussKernelSize);
-			getKernal(gaussWeight.get());
-			const int byteLen = 1;
-			// 在横向进行一次相加
-			for (int y = 0; y < test_img.rows; y++)
-			{
-				for (int x = 1; x < test_img.cols - 1; x++)
-				{
-					double newPix = 0.0;
-					//// 边界处理后的对应的权值矩阵实际值
-					newPix += (float)test_img.data[y * test_img.step[0] + (x - 1) * byteLen] * gaussWeight[0];
-					newPix += (float)test_img.data[y * test_img.step[0] + x * byteLen] * gaussWeight[1];
-					newPix += (float)test_img.data[y * test_img.step[0] + (x + 1) * byteLen] * gaussWeight[2];
-					selfSmoothed.data[y * selfSmoothed.step[0] + x * byteLen] = (uchar)newPix;
-				}
-			}
-			// 在竖向进行一次相加
-			for (int y = 1; y < test_img.rows - 1; y++)
-			{
-				for (int x = 0; x < test_img.cols; x++)
-				{
-					double newPix = 0.0f;
-					//// 边界处理后的对应的权值矩阵实际值
-					newPix += (float)selfSmoothed.data[(y - 1) * selfSmoothed.step[0] + x * byteLen] * gaussWeight[0];
-					newPix += (float)selfSmoothed.data[y * selfSmoothed.step[0] + x * byteLen] * gaussWeight[1];
-					newPix += (float)selfSmoothed.data[(y + 1) * selfSmoothed.step[0] + x * byteLen] * gaussWeight[2];
-					selfSmoothed.data[y * selfSmoothed.step[0] + x * byteLen] = (uchar)newPix;
-				}
-			}
-		}
-
-		auto t_1 = getTickCount();
-		cout << "手动计算高斯模糊耗时：" << (t_1 - t_0) / getTickFrequency() << endl;
-
-		cv::Mat cuda_sobel(test_img.size(), CV_32FC1, cv::Scalar(0));
-		cv::Mat cuda_sobelx(test_img.size(), CV_32FC1, cv::Scalar(0));
-		cv::Mat cuda_sobely(test_img.size(), CV_32FC1, cv::Scalar(0));
-		// sobel梯度计算
-		{
-			for (int pix = 0; pix < test_img.cols * test_img.rows; pix++)
-			{
-				auto imgData = selfSmoothed.data;
-				sobel_gpu_fun(pix, selfSmoothed.data, (float*)cuda_sobelx.data, (float*)cuda_sobely.data, (float*)cuda_sobel.data, selfSmoothed.cols, selfSmoothed.rows);
-
-			}
-		}
-		auto t_2 = getTickCount();
-		cout << "手动计算sobel梯度耗时：" << (t_2 - t_1) / getTickFrequency() << endl;
-
-
-		// 找匹配点
-
-
-
-		//  求透视变换矩阵
-
-		int out = 9;
-	}
-}
-
-
-void showKernel()
-{
-
-	double sigma = 1;
-	double error = 0.001;
-	double pi = 3.141592653;
-
-	// 根据signma 生成卷积
-	// 1. 计算需要的卷积核大小。
-	//double kernel_size = std::ceil(std::sqrt(std::log(std::sqrt(2 * pi) * sigma * error) * -1 * 2 * sigma * sigma));
-	double kernel_size = 5;
-	int k_w = int(2 * kernel_size + 1);
-	int k_h = int(2 * kernel_size + 1);
-	cout << "二阶特征值卷积核心: w=" << k_w << ", h=" << k_h << endl;
-
-	// 2. 计算需要的卷积核
-	// 参考资料： 
-	// [1] https://cds.cern.ch/record/400314/files/p27.pdf
-	// [2] Steger, Carsten. "An unbiased detector of curvilinear structures." IEEE Transactions on pattern analysis and machine intelligence 20.2 (1998): 113-125.
-	// 我们需要计算某个点附近的二阶导数，为了处理大线宽的情况，直接使用Sobel算子之类需要先对图像过一次高斯模糊，再使用两次Sobel算子分别计算一阶导数和二阶导数，
-	// 也就是说为了得到二阶导数我们需要做三次卷积，这相当不划算。而使用高斯函数的导数生成卷积核可以通过一次卷积得到二阶导数。
-	auto g_sigma1 = [=](double _x, double _y, double _sigma) {
-		return 1.0 / std::sqrt((2.0 * pi * _sigma * _sigma)) * std::exp(-1.0 / 2.0 * (_x * _x / _sigma / _sigma + _y * _y / _sigma / _sigma));
-	};
-	auto g_sigma1_x = [=](double _x, double _y, double _sigma) {
-		return -1.0 / (_sigma * _sigma) * _x * g_sigma1(_x, _y, _sigma);
-	};
-	auto g_sigma1_y = [=](double _x, double _y, double _sigma) {
-		return -1.0 / (_sigma * _sigma) * _y * g_sigma1(_x, _y, _sigma);
-	};
-	cv::Mat kernel_dxx = cv::Mat::zeros(k_h, k_w, CV_32SC1);
-	cv::Mat kernel_dxy = cv::Mat::zeros(k_h, k_w, CV_32SC1);
-	cv::Mat kernel_dyy = cv::Mat::zeros(k_h, k_w, CV_32SC1);
-	const int Q_BIT = 16; // 整数计算性能通常会远高于浮点计算性能，我们需要先对卷积核做量化。
-	for (int m = 0; m < k_h; ++m) {
-		for (int n = 0; n < k_w; ++n) {
-			double y = m - (k_h - 1.0) / 2.0;
-			double x = n - (k_w - 1.0) / 2.0;
-			double dxx = g_sigma1_x(x + 0.5, y, sigma) - g_sigma1_x(x - 0.5, y, sigma);
-			double dxy = g_sigma1_x(x, y + 0.5, sigma) - g_sigma1_x(x, y - 0.5, sigma);
-			double dyy = g_sigma1_y(x, y + 0.5, sigma) - g_sigma1_y(x, y - 0.5, sigma);
-			int32_t Q_dxx = static_cast<int32_t>(std::round(dxx * (1ULL << Q_BIT)));
-			int32_t Q_dxy = static_cast<int32_t>(std::round(dxy * (1ULL << Q_BIT)));
-			int32_t Q_dyy = static_cast<int32_t>(std::round(dyy * (1ULL << Q_BIT)));
-			kernel_dxx.at<int32_t>(m, n) = Q_dxx;
-			kernel_dxy.at<int32_t>(m, n) = Q_dxy;
-			kernel_dyy.at<int32_t>(m, n) = Q_dyy;
-		}
-	}
-	cv::String folder = "D:\\1_industrial\\sheng_shape_match\\test_2_v\\";
-	std::vector<cv::String> imagePathList;
-	cv::glob(folder, imagePathList);
-	// 高斯模糊矩阵 ：
-	float guassMatrix[3][3] = { {0.0947416, 0.118318, 0.0947416},{0.118318, 0.147761, 0.118318},{0.0947416, 0.118318, 0.0947416} };
-
-
-	for (int path_index = 0; path_index < imagePathList.size(); path_index++)
-	{
-		cv::Mat test_img = cv::imread(imagePathList[path_index], 0);
-		cv::Mat dst_dx, dst_dxy, dst_dyy, magnitudeImg;
-		cv::filter2D(test_img, dst_dx, CV_32F, kernel_dxx);
-		cv::filter2D(test_img, dst_dxy, CV_32F, kernel_dxy);
-		cv::filter2D(test_img, dst_dyy, CV_32F, kernel_dyy);
-
-		magnitudeImg = dst_dx.mul(dst_dx) + dst_dyy.mul(dst_dyy) + dst_dxy.mul(dst_dxy);
-
-		magnitudeImg.convertTo(magnitudeImg, CV_32F, 1.0 / (1 << 16));
-
-
-	}
-
-
-}
-
-
-
-void simulationGuass()
-{
-
-	cv::String folder = "D:\\1_industrial\\sheng_shape_match\\test_2_v\\";
-	std::vector<cv::String> imagePathList;
-	cv::glob(folder, imagePathList);
-	// 高斯模糊矩阵 ：
-	float guassMatrix[3][3] = { {0.0947416, 0.118318, 0.0947416},{0.118318, 0.147761, 0.118318},{0.0947416, 0.118318, 0.0947416} };
-
-
-	for (int path_index = 0; path_index < imagePathList.size(); path_index++)
-	{
-		cv::Mat test_img = cv::imread(imagePathList[path_index], 0);
-		cv::Mat cvSmoothed;
-		static const int KERNEL_SIZE = 3;
-		auto t_00 = getTickCount();
-		cv::GaussianBlur(test_img, cvSmoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
-
-		auto t_01 = getTickCount();
-		cout << "cv计算高斯模糊耗时：" << (t_01 - t_00) / getTickFrequency() << endl;
-
-		// 自己实现的高斯
-		int gaussKernelSize = 3;
-		cv::Mat selfSmoothed = test_img.clone();
-
-		auto gaussWeightX = std::make_unique<double[]>(gaussKernelSize);
-		getKernal(gaussWeightX.get());
-
-		// 在横向进行一次相加
-		auto t_0 = getTickCount();
-
-		const int byteLen = 1;// float 4 位
-		for (int y = 0; y < test_img.rows; y++)
-		{
-			for (int x = 1; x < test_img.cols - 1; x++)
-			{
-				double newPix = 0.0;
-				//// 边界处理后的对应的权值矩阵实际值
-				newPix += (float)test_img.data[y*test_img.step[0] + (x - 1)* byteLen] * gaussWeightX[0];
-				newPix += (float)test_img.data[y*test_img.step[0] + x * byteLen] * gaussWeightX[1];
-				newPix += (float)test_img.data[y*test_img.step[0] + (x + 1)* byteLen] * gaussWeightX[2];
-				selfSmoothed.data[y * selfSmoothed.step[0] + x * byteLen] = (uchar)newPix;
-			}
-		}
-		// 在竖向进行一次相加
-		for (int y = 1; y < test_img.rows - 1; y++)
-		{
-			for (int x = 0; x < test_img.cols; x++)
-			{
-				double newPix = 0.0f;
-				//// 边界处理后的对应的权值矩阵实际值
-				newPix += (float)selfSmoothed.data[(y - 1) * selfSmoothed.step[0] + x * byteLen] * gaussWeightX[0];
-				newPix += (float)selfSmoothed.data[y * selfSmoothed.step[0] + x * byteLen] * gaussWeightX[1];
-				newPix += (float)selfSmoothed.data[(y + 1) * selfSmoothed.step[0] + x * byteLen] * gaussWeightX[2];
-				selfSmoothed.data[y * selfSmoothed.step[0] + x * byteLen] = (uchar)newPix;
-			}
-		}
-
-		auto t_1 = getTickCount();
-		cout << "手动计算高斯模糊耗时：" << (t_1 - t_0) / getTickFrequency() << endl;
-		selfSmoothed.convertTo(selfSmoothed, CV_8UC1);
-
-	}
-
-}
 
 int main()
 {
 	test_shape_match();
-	//SL();
-	//SL_2();
-	// 
-	//simulation_cuda_sobel();
-	//simulationGuass();
 
 
-	int thread_num = std::thread::hardware_concurrency();
-	cout << "当前程序允许新开最高线程数：" << thread_num << endl;
-
+ // 	int thread_num = std::thread::hardware_concurrency();
+	//cout << "当前程序允许新开最高线程数：" << thread_num << endl;
+	
 	return 0;
 }
