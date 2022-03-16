@@ -57,14 +57,17 @@ class shapeInfoProducer
 {
 
 public:
-	shapeInfoProducer(cv::Mat& src, int in_featuresNum, float magnitude, string inpath);
+	shapeInfoProducer(cv::Mat& src, int in_featuresNum, float magnitude, std::vector<float> _scale_range, string inpath);
+	~shapeInfoProducer(void);
 	//shapeInfoProducer(cv::Mat& src, int in_featuresNum, float magnitude, float threshold) {};
-	cv::Mat srcImg;
+	cv::Mat srcImg, pyramidImg;
 	cv::Mat magnitudeImg;		//梯度幅值图
 	cv::Mat quantized_angle;				// 量化后的角度图，根据离散量化投票机制，找出每个位置3x3领域中出现次数最多的方向(为了避免小的形变的影响)，如果投票数量小于5，方向则为0， [0-7]；
 	cv::Mat angle_ori;			// 角度图, 
 	float magnitude_value;			//选特征点时的幅值阈值
 	int num_features;
+	std::vector<float> scale_level; // 模板的多比例
+	int scale_level_num;				// 多比例的层数
 	std::string path;
 
 	std::vector<Feature> out_features;	// 过了极大值，然后再过一次距离判断，找到的最终特征点
@@ -98,7 +101,6 @@ public:
 	void train();
 
 
-
 	// 滞后方向，就是找出3X3领域内主要的方向，
 	// magnitudeImg, quantized_angle, angle_ori, magnitude_value * magnitude_value
 	void hysteresisGradient();
@@ -112,7 +114,7 @@ public:
 };
 
 
-void shapeInfoProducer::hysteresisGradient()//Mat &magnitude, Mat &quantized_angle, Mat &angle, float threshold
+void shapeInfoProducer::hysteresisGradient()
 {
 	// Quantize 360 degree range of orientations into 16 buckets
 	// Note that [0, 11.25), [348.75, 360) both get mapped in the end to label 0,
@@ -143,7 +145,7 @@ void shapeInfoProducer::hysteresisGradient()//Mat &magnitude, Mat &quantized_ang
 
 	// Filter the raw quantized image. Only accept pixels where the magnitude is above some
 	// threshold, and there is local agreement on the quantization.
-	quantized_angle = Mat::zeros(this->angle_ori.size(), CV_8U);
+	this->quantized_angle = Mat::zeros(this->angle_ori.size(), CV_8U);
 	float strong_magnitude_value = this->magnitude_value * this->magnitude_value;
 	for (int r = 1; r < this->angle_ori.rows - 1; ++r)
 	{
@@ -225,7 +227,7 @@ bool shapeInfoProducer::extractFeaturePoints()
 		& this->magnitudeImg > bottom;
 
 
-
+	// 获取极大值
 	std::vector<Candidate> temp_candidates;
 	for (int row = 1; row < binary.rows - 1; ++row) {
 		for (int col = 1; col < binary.cols - 1; ++col)
@@ -241,7 +243,7 @@ bool shapeInfoProducer::extractFeaturePoints()
 		}
 	}
 	sort(temp_candidates.begin(), temp_candidates.end()); // 降序
-
+	// 过一遍非极大值抑制
 	std::vector<int> del_index;
 	for (int i = 0; i < temp_candidates.size() - 1; i++)
 	{
@@ -258,7 +260,6 @@ bool shapeInfoProducer::extractFeaturePoints()
 	}
 	sort(del_index.begin(), del_index.end()); // 降序
 	del_index.erase(unique(del_index.begin(), del_index.end()), del_index.end());
-
 	for (int i = 0; i < del_index.size(); i++)
 	{
 		temp_candidates.erase(temp_candidates.begin() + (del_index.at(i) - i));
@@ -267,7 +268,7 @@ bool shapeInfoProducer::extractFeaturePoints()
 
 	// 临时可视化全部极大值特征
 	cv::Mat show_max;
-	cvtColor(this->srcImg, show_max, COLOR_GRAY2RGB);
+	cv::cvtColor(this->pyramidImg, show_max, COLOR_GRAY2RGB);
 	for (int i = 0; i < temp_candidates.size(); i++)
 	{
 		cv::Point show_coor = cv::Point(temp_candidates.at(i).f.x, temp_candidates.at(i).f.y);
@@ -277,50 +278,6 @@ bool shapeInfoProducer::extractFeaturePoints()
 		show_max.at<Vec3b>(show_coor.y, show_coor.x)[2] = 255;
 	}
 
-
-	// 原始的代码有问题，用自己思路的找极大值方法
-	/*
-	for (int r = 0 + nms_kernel_size / 2; r < this->magnitudeImg.rows - nms_kernel_size / 2; ++r)
-	{
-
-		for (int c = 0 + nms_kernel_size / 2; c < this->magnitudeImg.cols - nms_kernel_size / 2; ++c)
-		{
-			float score = 0;
-			if (magnitude_valid.at<uchar>(r, c) > 0) {
-				score = this->magnitudeImg.at<float>(r, c);
-				bool is_max = true;
-				for (int r_offset = -nms_kernel_size / 2; r_offset <= nms_kernel_size / 2; r_offset++) {
-					for (int c_offset = -nms_kernel_size / 2; c_offset <= nms_kernel_size / 2; c_offset++) {
-						if (r_offset == 0 && c_offset == 0) continue;
-
-						if (score < this->magnitudeImg.at<float>(r + r_offset, c + c_offset)) {
-							score = 0;
-							is_max = false;
-							break;
-						}
-					}
-					if (!is_max) break;
-				}
-
-				if (is_max) {
-					for (int r_offset = -nms_kernel_size / 2; r_offset <= nms_kernel_size / 2; r_offset++) {
-						for (int c_offset = -nms_kernel_size / 2; c_offset <= nms_kernel_size / 2; c_offset++) {
-							if (r_offset == 0 && c_offset == 0) continue;
-							magnitude_valid.at<uchar>(r + r_offset, c + c_offset) = 0;
-						}
-					}
-				}
-			}
-
-			if (score > threshold_sq && this->angle_ori.at<uchar>(r, c) > 0)
-			{
-				candidates.push_back(Candidate(c, r, this->getLabel(this->angle_ori.at<uchar>(r, c)), score));
-				candidates.back().f.theta = angle_ori.at<float>(r, c);
-			}
-		}
-	}
-	*/
-
 	// We require a certain number of features
 	if (temp_candidates.size() < num_features)
 	{
@@ -328,7 +285,7 @@ bool shapeInfoProducer::extractFeaturePoints()
 			std::cout << "too few features, abort" << std::endl;
 			return false;
 		}
-		std::cout << "have no enough features, exaustive mode" << std::endl;
+		//std::cout << "have no enough features, exaustive mode" << std::endl;
 	}
 
 	// NOTE: Stable sort to agree with old code, which used std::list::sort()
@@ -344,9 +301,9 @@ bool shapeInfoProducer::extractFeaturePoints()
 		return false;
 	}
 
-	// 临时可视化极大值特征
+	// 临时可视化最终找到的极大值特征
 	cv::Mat show_two;
-	cvtColor(this->srcImg, show_two, COLOR_GRAY2RGB);
+	cv::cvtColor(this->pyramidImg, show_two, COLOR_GRAY2RGB);
 	for (int i = 0; i < this->out_features.size(); i++)
 	{
 		cv::Point show_coor = cv::Point(this->out_features.at(i).x, this->out_features.at(i).y);
@@ -418,69 +375,104 @@ bool shapeInfoProducer::selectScatteredFeatures(const std::vector<Candidate>& ca
 }
 
 
-shapeInfoProducer::shapeInfoProducer(cv::Mat& in_src, int in_featuresNum, float in_magnitude, string inpath)
+shapeInfoProducer::shapeInfoProducer(cv::Mat& in_src, int in_featuresNum, float in_magnitude, std::vector<float> _scale_range, string inpath)
 {
 	this->srcImg = in_src;
 	this->magnitude_value = in_magnitude;
 	this->num_features = in_featuresNum;
+	this->scale_level = _scale_range;
+	this->scale_level_num = (int)_scale_range.size();
 	this->path = inpath;
-	cout << "strat train, train img rows:" << this->srcImg.rows << endl;
+	/*cout << "strat train, train img rows:" << this->srcImg.rows << endl;
 	cout << "num_features:" << num_features << endl;
 	cout << "magnitude_value:" << magnitude_value << endl;
-	cout << "save feature path:" << this->path << endl;
+	cout << "mul scale size:" << this->scale_level_num << endl;*/
+	std::cout << "save feature path:" << this->path << endl;
 
+}
+
+
+shapeInfoProducer::~shapeInfoProducer(void)
+{
+
+	std::cout << "退出形状模板训练" << endl;
 }
 
 
 void shapeInfoProducer::train()
 {
-
-	Mat smoothed;
-	static const int KERNEL_SIZE = 5;
-	cv::GaussianBlur(this->srcImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
-
-	cv::Mat sobel_dx, sobel_dy;
-	cv::Sobel(smoothed, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
-	cv::Sobel(smoothed, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
-	magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
-	cv::phase(sobel_dx, sobel_dy, angle_ori, true);
-	// 量化到8个方向，再根据领域找出现次数最多的方向，结果放在：quantized_angle
-	hysteresisGradient();
-
-	// todo 这里应加个循环的提取，金字塔和旋转的模板
-	//  nms 根据幅值图筛选极大值特征点
-
-	if (!this->extractFeaturePoints())
-	{
-		//return -1;
-		cout << "提取失败" << endl;
+	// 保存训练的特征
+	cv::FileStorage fs(this->path, cv::FileStorage::WRITE);
+	fs << "pyramid_scales" << "[";
+	fs << "[:";
+	for (int i = 0; i < this->scale_level.size(); i++)
+	{ 
+		fs << this->scale_level[i];
 
 	}
-	else
+	fs << "]";
+	fs << "]";
+	fs << "template_pyramids" << "[";
+	for (int pyramid_levels_num = 0; pyramid_levels_num < this->scale_level_num; pyramid_levels_num++)
 	{
-		// 保存训练的特征
-		cv::FileStorage fs(this->path, cv::FileStorage::WRITE);
-		fs << "pyramid_levels" << 1;
-		fs << "template_pyramids" << "[";
-		fs << "{";
-		fs << "template_id" << 0; // 后面这里加循环写入模板增强
-		fs << "template_width" << this->srcImg.cols;
-		fs << "template_height" << this->srcImg.rows;
+		float pyramid_levels_scale = this->scale_level[pyramid_levels_num];
+		this->pyramidImg.release();
+		cv::Mat smoothed;
+		cv::resize(this->srcImg, this->pyramidImg, cv::Size(0, 0), pyramid_levels_scale, pyramid_levels_scale);
+		static const int KERNEL_SIZE = 5;
+		cv::GaussianBlur(this->pyramidImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
 
-		fs << "features" << "[";
-		for (int i = 0; i < this->out_features.size(); i++)
+		cv::Mat sobel_dx, sobel_dy;
+		cv::Sobel(smoothed, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
+		cv::Sobel(smoothed, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
+		magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
+		cv::phase(sobel_dx, sobel_dy, this->angle_ori, true);
+		// 量化到8个方向，再根据领域找出现次数最多的方向，结果放在：quantized_angle
+		hysteresisGradient();
+
+		// todo 这里应加个循环的提取，金字塔和旋转的模板
+		//  nms 根据幅值图筛选极大值特征点
+
+		if (!this->extractFeaturePoints())
 		{
-			fs << "[:" << this->out_features[i].x << this->out_features[i].y <<
-				this->out_features[i].label << "]";
+			//return -1;
+			std::cout << "训练失败" << endl;
 
 		}
-		fs << "]";
-		fs << "}";
-		fs << "]";
-		fs.release();
+		else
+		{
+			fs << "{";
+			fs << "template_id" << pyramid_levels_num; // 后面这里加循环写入模板增强
+			fs << "pyramid_level" << pyramid_levels_num;
+			fs << "template_width" << pyramidImg.cols;
+			fs << "template_height" << pyramidImg.rows;
+
+			fs << "features" << "[";
+			for (int i = 0; i < this->out_features.size(); i++)
+			{
+				fs << "[:" << this->out_features[i].x << this->out_features[i].y <<
+					this->out_features[i].label << "]";
+
+			}
+			fs << "]";
+			fs << "}";
+		}
+		std::cout << "比例：" << pyramid_levels_scale << " 的模板训练完毕" << endl;
+
+		// 释放多比例图片中的占用图，用于下一个金字塔的mat类型使用
+		this->angle_ori.release();
+		this->magnitudeImg.release();
+		this->quantized_angle.release();
+		this->out_features.clear();
+
+
 	}
+	fs << "]";
+
+	fs.release();
 
 }
+
 
 
 class shapeMatch
@@ -490,30 +482,44 @@ public:
 	~shapeMatch(void);
 	cv::Mat testImg;
 
-	cv::Mat magnitudeImg;			// 测试图梯度幅值图
-	cv::Mat angle_ori;				// 角度图，0-360度
-	cv::Mat quantized_angle;		// 测试图量化（0-360  ->  0-7）后的方向
-	cv::Mat spread_quantized;		// 测试图广播后的方向
+	//cv::Mat magnitudeImg;			// 测试图梯度幅值图
+	//cv::Mat angle_ori;				// 角度图，0-360度
+	//cv::Mat quantized_angle;		// 测试图量化（0-360  ->  0-7）后的方向
+	//cv::Mat spread_quantized;		// 测试图广播后的方向
+	std::vector<float> pyramid_scale_level; // 模板的多比例
+	int pyramid_scale_level_num;			// 多比例的层数
 	float threshold;
 	float magnitude;
 	float iou;
 	std::string feature_path;
-	std::vector<std::vector<std::vector<Feature>>> in_features;
-	std::vector<std::pair<int, int>> template_size;
-	std::vector<cv::Mat> response_maps;
+	std::vector<std::pair<int, std::vector<std::vector<Feature>>>> in_features;		// 第一个float类型存的是金字塔的比例
+	std::vector<cv::Size> template_size;
+	std::vector<cv::Mat> vec_quantized_angle;			// 单个相应图
+	std::vector<std::vector<cv::Mat>> vec_response_maps;		// 多比例的金字塔响应图，
 
 	int _T = 1;
 	void load_shapeInfos();
 
 	// 处理测试图片的梯度方向，广播，响应图
 	void inference();
-	void quantizedGradientOrientations();
+	void quantizedGradientOrientations(cv::Mat& angle_ori, cv::Mat& quantized_angle, cv::Mat& magnitudeImg);
 	void spread(const Mat& src, Mat& dst, int T);
 
 	void orUnaligned8u(const uchar* src, const int src_stride, uchar* dst, const int dst_stride,
 		const int width, const int height);
 
-	void computeResponseMaps(const Mat& src, std::vector<Mat>& in_response_maps);
+	void computeResponseMaps(const Mat& src, std::vector<Mat>& in_response_maps, int pyramid_level);
+
+	// 筛选极大值
+	class matchResult
+	{
+	public:
+		int x;
+		int y;
+		float score;
+		matchResult(int _x, int _y, float _score) :
+			x(_x), y(_y), score(_score) {}
+	};
 
 
 };
@@ -526,37 +532,51 @@ shapeMatch::shapeMatch(cv::Mat& in_testImg, float in_magnitude, float in_thresho
 	this->testImg = in_testImg;
 	this->magnitude = in_magnitude;
 	this->iou = in_iou;
-	cout << "特征文件路径：" << this->feature_path << endl;
-	cout << "输入的测试图梯度阈值：" << this->magnitude << endl;
+	std::cout << "特征文件路径：" << this->feature_path << endl;
+	std::cout << "输入的测试图梯度阈值：" << this->magnitude << endl;
 
 	load_shapeInfos();
-
+	this->vec_response_maps.resize(this->pyramid_scale_level_num);
+	this->vec_quantized_angle.resize(this->pyramid_scale_level_num);
 }
 
 shapeMatch::~shapeMatch(void)
 {
-	cout << "退出形状模板匹配" << endl;
+	std::cout << "退出形状模板匹配" << endl;
 }
+
 
 void shapeMatch::load_shapeInfos()
 {
 	cv::FileStorage fs(this->feature_path, cv::FileStorage::READ);
 	FileNode fn = fs.root();
-	vector<Feature> one_pyramid_features;
+	FileNode tps_level = fn["pyramid_scales"];
+	this->pyramid_scale_level.clear();
+	{
+		FileNodeIterator tps_level_it = tps_level.begin(), tps_level_it_end = tps_level.end();
+	
+		auto _feature_it = (*tps_level_it).begin();
+		_feature_it >> this->pyramid_scale_level;
+		
+	}
+	this->pyramid_scale_level_num = (int)pyramid_scale_level.size();
+
 	FileNode tps_fn = fn["template_pyramids"];
 	this->in_features.resize(tps_fn.size());
 	this->template_size.resize(tps_fn.size());
 
 	int expected_id = 0;
+	vector<Feature> one_pyramid_features;
 	FileNodeIterator tps_it = tps_fn.begin(), tps_it_end = tps_fn.end();
 	for (; tps_it != tps_it_end; ++tps_it, ++expected_id)
 	{
 		int template_id = (*tps_it)["template_id"];
+		int pyramid_level = (*tps_it)["pyramid_level"];
 		CV_Assert(template_id == expected_id);
 		int _template_width = (*tps_it)["template_width"];
 		int _template_height = (*tps_it)["template_height"];
-		this->template_size[template_id].first = _template_width;
-		this->template_size[template_id].second = _template_height;
+		this->template_size[pyramid_level].width = _template_width;
+		this->template_size[pyramid_level].height = _template_height;
 		FileNode templates_fn = (*tps_it)["features"];
 		one_pyramid_features.clear();
 		one_pyramid_features.resize(templates_fn.size());
@@ -571,21 +591,21 @@ void shapeMatch::load_shapeInfos()
 			one_pyramid_features[idx] = _one_feature;
 			idx++;
 		}
-
-		this->in_features[expected_id].emplace_back(one_pyramid_features);
+		this->in_features[pyramid_level].first = pyramid_level;
+		this->in_features[pyramid_level].second.emplace_back(one_pyramid_features);
 	}
 
 
 }
 
 
-void shapeMatch::quantizedGradientOrientations()//Mat &magnitude, Mat &quantized_angle, Mat &angle, float threshold
+void shapeMatch::quantizedGradientOrientations(cv::Mat& angle_ori, cv::Mat& quantized_angle, cv::Mat& magnitudeImg)//Mat &magnitude, Mat &quantized_angle, Mat &angle, float threshold
 {
 	// Quantize 360 degree range of orientations into 16 buckets
 	// Note that [0, 11.25), [348.75, 360) both get mapped in the end to label 0,
 	// for stability of horizontal and vertical features.
 	Mat_<unsigned char> quantized_unfiltered;
-	this->angle_ori.convertTo(quantized_unfiltered, CV_8U, 16 / 360.0);
+	angle_ori.convertTo(quantized_unfiltered, CV_8U, 16 / 360.0);
 
 	// Zero out top and bottom rows
 	/// @todo is this necessary, or even correct?
@@ -599,10 +619,10 @@ void shapeMatch::quantizedGradientOrientations()//Mat &magnitude, Mat &quantized
 	}
 
 	// Mask 16 buckets into 8 quantized orientations
-	for (int r = 1; r < this->angle_ori.rows - 1; ++r)
+	for (int r = 1; r < angle_ori.rows - 1; ++r)
 	{
 		uchar* quant_r = quantized_unfiltered.ptr<uchar>(r);
-		for (int c = 1; c < this->angle_ori.cols - 1; ++c)
+		for (int c = 1; c < angle_ori.cols - 1; ++c)
 		{
 			quant_r[c] &= 7;// 很巧妙地做了一个反转，如方向15的转为7,这里就是量化方向，360度换乘16块，再变成8块，也就是8个方向
 		}
@@ -610,7 +630,7 @@ void shapeMatch::quantizedGradientOrientations()//Mat &magnitude, Mat &quantized
 
 	// Filter the raw quantized image. Only accept pixels where the magnitude is above some
 	// threshold, and there is local agreement on the quantization.
-	this->quantized_angle = Mat::zeros(this->angle_ori.size(), CV_8U);
+	quantized_angle = Mat::zeros(angle_ori.size(), CV_8U);
 	float strong_magnitude_value = this->magnitude * this->magnitude;
 
 
@@ -664,51 +684,51 @@ void shapeMatch::quantizedGradientOrientations()//Mat &magnitude, Mat &quantized
 
 
 	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
-	int Rows = this->angle_ori.rows - 2;
+	int Rows = angle_ori.rows - 2;
 	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
 	std::vector<std::thread> vec_threads;
-	cv::Mat temp_magnitudeImg(this->magnitudeImg);
-	cv::Mat temp_quantized_angle(this->quantized_angle);
+	cv::Mat temp_magnitudeImg(magnitudeImg);
+	cv::Mat temp_quantized_angle(quantized_angle);
 	for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
 	{
 		int startR = std::max(1, thread_i * per_thread_process_num);
 		int endR = std::min((thread_i + 1) * per_thread_process_num, Rows);
 		vec_threads.emplace_back([=, &temp_magnitudeImg, &quantized_unfiltered, &temp_quantized_angle]()
-		{ subQuantiOri(startR, endR, this->angle_ori.cols, strong_magnitude_value, temp_magnitudeImg, quantized_unfiltered, temp_quantized_angle);
+		{ subQuantiOri(startR, endR, angle_ori.cols, strong_magnitude_value, temp_magnitudeImg, quantized_unfiltered, temp_quantized_angle);
 		});
 	}
 	for (auto& t : vec_threads)
 	{
 		t.join();
 	}
-	this->magnitudeImg = temp_magnitudeImg;
-	this->quantized_angle = temp_quantized_angle;
+	magnitudeImg = temp_magnitudeImg;
+	quantized_angle = temp_quantized_angle;
 
 
 
 }
 
 
-void countSimilarity(std::vector<std::vector<std::vector<Feature>>>& in_features, std::vector<std::pair<int, int>>& template_size, cv::Mat& quantized_angle,
-						std::vector<cv::Mat>& response_maps, cv::Mat& similarity, int _T, int pyramidIdx)
+void countSimilarity(std::vector<std::pair<int, std::vector<std::vector<Feature>>>>& in_features, std::vector<cv::Size>& template_size,
+					cv::Size test_img_size, std::vector<cv::Mat>& response_maps, cv::Mat& similarity, int _T, int pyramidIdx)
 {
 
-	// 循环滑窗匹配
-	auto subThreadCountSimilarity = [=](int threadIdx, int startRow, int endRow, std::vector<std::vector<std::vector<Feature>>>& in_features, std::vector<std::pair<int, int>>& template_size, 
-										cv::Mat& quantized_angle, std::vector<cv::Mat>& response_maps, cv::Mat& similarity, int _T, int pyramidIdx)
+	// 循环滑窗匹配,这是高层的滑窗匹配，金字塔Idx应该都是0；
+	auto subThreadCountSimilarity = [=](int threadIdx, int startRow, int endRow, std::vector<std::pair<int, std::vector<std::vector<Feature>>>>& in_features, std::vector<cv::Size>& template_size,
+										int test_img_cols, std::vector<cv::Mat>& response_maps, cv::Mat& similarity, int _T, int pyramidIdx)
 	{
 		for (int r = startRow; r < endRow; r += _T)
 		{
 		//cout << "threadIdx :" << threadIdx << ", " <<  endl;
-			for (int c = 0; c < quantized_angle.cols - template_size[pyramidIdx].first; c += _T)
+			for (int c = 0; c < test_img_cols - template_size[pyramidIdx].width; c += _T)
 			{
-				for (int t = 0; t < in_features[pyramidIdx].size(); t++) // 这个循环是模板级别的
+				for (int t = 0; t < in_features[pyramidIdx].second.size(); t++) // 这个循环是模板级别的
 				{
-					int fea_size = (int)in_features[pyramidIdx][t].size();
+					int fea_size = (int)in_features[pyramidIdx].second[t].size();
 					int ori_sum = 0;
 					for (int f = 0; f < fea_size; f++) // 这个循环是特征级别的
 					{
-						Feature feat = in_features[pyramidIdx][t][f];
+						Feature feat = in_features[pyramidIdx].second[t][f];
 						int label = feat.label;
 						auto _ori = (int)response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
 						ori_sum += (int)response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
@@ -729,17 +749,17 @@ void countSimilarity(std::vector<std::vector<std::vector<Feature>>>& in_features
 	};
 
 	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
-	int Rows = (int)quantized_angle.rows - template_size[pyramidIdx].second;
+	int Rows = (int)test_img_size.height - template_size[pyramidIdx].height;
 	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
-	cout <<"当前电脑最大线程数："<< max_thread_num << " ,  每个线程最多处理行数：" <<per_thread_process_num <<", 总行数："<< Rows << endl;
+	std::cout <<"当前电脑最大线程数："<< max_thread_num << " ,  每个线程最多处理行数：" <<per_thread_process_num <<", 总行数："<< Rows << endl;
 	std::vector<std::thread> vec_threads;
 	for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
 	{
 		int startRow = thread_i * per_thread_process_num;
 		int endRow = std::min((thread_i + 1) * per_thread_process_num, Rows);
-		vec_threads.emplace_back([=, &in_features, &template_size, &quantized_angle, &response_maps, &similarity]()
+		vec_threads.emplace_back([=, &in_features, &template_size, &response_maps, &similarity]()
 		{ subThreadCountSimilarity(thread_i, startRow, endRow, in_features, template_size,
-			quantized_angle, response_maps, similarity, _T, pyramidIdx);
+			test_img_size.width, response_maps, similarity, _T, pyramidIdx);
 		});
 
 	}
@@ -752,106 +772,219 @@ void countSimilarity(std::vector<std::vector<std::vector<Feature>>>& in_features
 }
 
 
+void similarityLocal(cv::Point start_point, int count_field, std::vector<cv::Mat>& response_maps, cv::Mat& similarity, 
+					 std::vector<std::pair<int, std::vector<std::vector<Feature>>>>& in_features, float high_scale)
+{
+	int count_mul = 2;
+	for (int r = start_point.y; r < start_point.y + count_field * count_mul; r++)
+	{
+
+		for (int c = start_point.x; c < start_point.x + count_field * count_mul; c++)
+		{
+			for (int t = 0; t < in_features[1].second.size(); t++) // 这个循环是模板级别的
+			{
+				int fea_size = (int)in_features[1].second[t].size();
+				int ori_sum = 0;
+				for (int f = 0; f < fea_size; f++) // 这个循环是特征级别的
+				{
+					Feature feat = in_features[1].second[t][f];
+					int label = feat.label;
+					auto _ori = (int)response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
+					ori_sum += (int)response_maps[label].ptr<uchar>(r + feat.y)[c + feat.x];
+
+				}
+				if (ori_sum != 0)
+				{
+					float score = ori_sum / (4.0f * fea_size);
+					//cout << "fea_size: " << fea_size << ", ori_sum:" << ori_sum  << ", score:" << score << endl;
+					similarity.at<float>(r, c) = score;
+
+				}
+
+			}
+		}
+	}
+
+
+}
+
+
 void shapeMatch::inference()
 {
-	auto t0 = getTickCount();
-	Mat smoothed;
-	static const int KERNEL_SIZE = 5;
-	cv::GaussianBlur(this->testImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
-
-	cv::Mat sobel_dx, sobel_dy;
-	auto t_sobel = cv::getTickCount();
-	cv::Sobel(smoothed, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
-	cv::Sobel(smoothed, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
-	this->magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
-	cv::phase(sobel_dx, sobel_dy, this->angle_ori, true);
-	// 量化到8个方向，再根据领域找出现次数最多的方向，主要输出结果是：this->quantized_angle
-	auto t_quatize = cv::getTickCount();
-	cout << "求梯度耗时：" << (t_quatize - t_sobel) / cv::getTickFrequency() << endl;;
-	quantizedGradientOrientations();
-
-	auto t_spread = cv::getTickCount();
-	cout << "量化方向耗时：" << (t_spread - t_quatize) / cv::getTickFrequency() << endl;;
-	spread(this->quantized_angle, this->spread_quantized, 1);		// 4 是广播的领域尺度，4 或 8
-
-	auto t_response = cv::getTickCount();
-	cout << "广播方向耗时：" << (t_response - t_spread) / cv::getTickFrequency() << endl;;
-	computeResponseMaps(this->spread_quantized, this->response_maps);
-	auto t_response_out = cv::getTickCount();
-	cout << "计算响应图耗时：" << (t_response_out - t_response) / cv::getTickFrequency() << endl;;
-
-	auto t1 = getTickCount();
-	auto t01 = (t1 - t0) / getTickFrequency();
-	cout << "测试图方向量化、广播、8个方向响应图耗时：" << t01 << endl;
-	// 到这一步后基本需要的都可以了，开始匹配，输入：训练的特征点，8个响应图
-
-	cv::Mat similarity = cv::Mat::zeros(this->testImg.size(), CV_32FC1);
-	
-
-	for (int p = 0; p < in_features.size(); p++) //这个循环是金字塔级别的
+	auto t_start = getTickCount();
+	std::vector<cv::Size> vec_test_img_pyramid_size;
+	vec_test_img_pyramid_size.clear();
+	// 制作多个响应图
+	for(int pyramid_level = 0; pyramid_level < this->pyramid_scale_level_num; pyramid_level ++ )
 	{
-		countSimilarity(this->in_features, this->template_size, this->quantized_angle, this->response_maps, similarity, _T, p);
+		auto t0 = getTickCount();
+		// 先下采样
+
+		cv::Size size(this->testImg.cols * this->pyramid_scale_level[pyramid_level], this->testImg.rows * this->pyramid_scale_level[pyramid_level]);
+		vec_test_img_pyramid_size.emplace_back(size);
+		cv::Mat pyramidImg;
+		if ((int)this->pyramid_scale_level[pyramid_level] != 1)
+			cv::pyrDown(this->testImg, pyramidImg, size);
+		else
+			pyramidImg = this->testImg.clone();
+		cv::Mat smoothed;
+		static const int KERNEL_SIZE = 5;
+		cv::GaussianBlur(pyramidImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
+
+		cv::Mat sobel_dx, sobel_dy, magnitudeImg, angle_ori, quantized_angle, spread_quantized;
+		auto t_sobel = cv::getTickCount();
+		cv::Sobel(smoothed, sobel_dx, CV_32F, 1, 0, 3, 1.0, 0.0, BORDER_REPLICATE);
+		cv::Sobel(smoothed, sobel_dy, CV_32F, 0, 1, 3, 1.0, 0.0, BORDER_REPLICATE);
+		magnitudeImg = sobel_dx.mul(sobel_dx) + sobel_dy.mul(sobel_dy);
+		cv::phase(sobel_dx, sobel_dy, angle_ori, true);
+		// 量化到8个方向，再根据领域找出现次数最多的方向，主要输出结果是：this->quantized_angle
+		auto t_quatize = cv::getTickCount();
+		std::cout << "求梯度耗时：" << (t_quatize - t_sobel) / cv::getTickFrequency() << endl;;
+		quantizedGradientOrientations(angle_ori, quantized_angle, magnitudeImg);
+
+		auto t_spread = cv::getTickCount();
+		std::cout << "量化方向耗时：" << (t_spread - t_quatize) / cv::getTickFrequency() << endl;;
+		spread(quantized_angle, spread_quantized, 2);		// 最后一个参数 是广播的领域尺度，2, 4 或 8
+
+		auto t_response = cv::getTickCount();
+		std::cout << "广播方向耗时：" << (t_response - t_spread) / cv::getTickFrequency() << endl;;
+		computeResponseMaps(spread_quantized, this->vec_response_maps[pyramid_level], pyramid_level);
+		auto t_response_out = cv::getTickCount();
+		std::cout << "计算响应图耗时：" << (t_response_out - t_response) / cv::getTickFrequency() << endl;;
+
+		auto t1 = getTickCount();
+		auto t01 = (t1 - t0) / getTickFrequency();
+		std::cout << "测试图方向量化、广播、8个方向响应图耗时：" << t01 << endl;
+		// 到这一步后基本需要的都可以了，开始匹配，输入：训练的特征点，8个响应图
 
 	}
 
 
-
-	auto t_count_similarity = cv::getTickCount();
-	cout << "计算相似度耗时：" << (t_count_similarity - t_response_out) / cv::getTickFrequency() << endl;
-	// 筛选极大值
-	class matchResult
+	std::vector<matchResult> second_results;
 	{
-	public:
-		int x;
-		int y;
-		float score;
-		matchResult(int _x, int _y, float _score) :
-			x(_x), y(_y), score(_score) {}
-	};
-	int _rows = similarity.rows;
-	int _cols = similarity.cols;
-	cv::Mat left = cv::Mat::zeros(similarity.size(), similarity.type());
-	cv::Mat right = cv::Mat::zeros(similarity.size(), similarity.type());
-	cv::Mat top = cv::Mat::zeros(similarity.size(), similarity.type());
-	cv::Mat bottom = cv::Mat::zeros(similarity.size(), similarity.type());
+		// 1. 先在高层滑窗匹配匹配
+		auto t_start_first_match = cv::getTickCount();
+		cv::Mat first_similarity = cv::Mat::zeros(vec_test_img_pyramid_size[0], CV_32FC1);
+		countSimilarity(this->in_features, this->template_size, vec_test_img_pyramid_size[0], this->vec_response_maps[0], first_similarity, _T, 0);
 
-	similarity.rowRange(0, _rows - 1).copyTo(top.rowRange(1, _rows));
-	similarity.rowRange(1, _rows).copyTo(bottom.rowRange(0, _rows - 1));
-	similarity.colRange(0, _cols - 1).copyTo(left.colRange(1, _cols));
-	similarity.colRange(1, _cols).copyTo(right.colRange(0, _cols - 1));
+		auto t_first_count_similarity = cv::getTickCount();
+		std::cout << "第一次计算相似度耗时：" << (t_first_count_similarity - t_start_first_match) / cv::getTickFrequency() << endl;
 
-	cv::Mat binary = similarity >= this->threshold
-		& similarity >= left
-		& similarity >= right
-		& similarity >= top
-		& similarity >= bottom;
-
-	// 采用连通域的方法，有时会有两个位置连续的，也就是置信度一样的，这样应该可以避免
-	cv::Mat labels, status, centroids;
-	int label_count = cv::connectedComponentsWithStats(binary, labels, status, centroids);
-	std::vector<matchResult> results;
-	for (int i = 1; i < label_count; ++i)
-	{
-		int _x = status.at<int>(i, CC_STAT_LEFT);
-		int _y = status.at<int>(i, CC_STAT_TOP);
-		results.emplace_back(_x, _y, similarity.at<float>(_y, _x));
-	}
-
-
-	// 过一遍IOU，要求大于一定的比例就抛弃
-	cv::Mat show_img, iouShowImg;
-	cvtColor(this->testImg, show_img, COLOR_GRAY2RGB);
-	
-	std::sort(results.begin(), results.end(), [&](matchResult a, matchResult b) {return a.score > b.score; });
-	auto _results = results;
-	std::vector<int> del_results_idx ;
- 	for (int n = 0; n < results.size()-1; n++)
-	{
-		cv::Rect box_0(results[n].x, results[n].y, this->template_size[0].first, this->template_size[0].second);
-		for (int m = n + 1; m < results.size(); m++)
+		// 2. 找极大值点 （这里直接在极大值点映射到低层去找，映射时会根据比例映射到一个范围；
+		//					后续：在极大值点的3x3领域内做映射到底层的范围）
+		std::vector<matchResult> first_results;
 		{
-			cv::Rect box_1(results[m].x, results[m].y, this->template_size[0].first, this->template_size[0].second);
-			float twoArea = 2 * (float)this->template_size[0].first * (float)this->template_size[0].second;
+			int _rows = first_similarity.rows;
+			int _cols = first_similarity.cols;
+			cv::Mat left = cv::Mat::zeros(first_similarity.size(), first_similarity.type());
+			cv::Mat right = cv::Mat::zeros(first_similarity.size(), first_similarity.type());
+			cv::Mat top = cv::Mat::zeros(first_similarity.size(), first_similarity.type());
+			cv::Mat bottom = cv::Mat::zeros(first_similarity.size(), first_similarity.type());
+
+			first_similarity.rowRange(0, _rows - 1).copyTo(top.rowRange(1, _rows));
+			first_similarity.rowRange(1, _rows).copyTo(bottom.rowRange(0, _rows - 1));
+			first_similarity.colRange(0, _cols - 1).copyTo(left.colRange(1, _cols));
+			first_similarity.colRange(1, _cols).copyTo(right.colRange(0, _cols - 1));
+
+			cv::Mat first_binary = first_similarity >= this->threshold
+				& first_similarity >= left
+				& first_similarity >= right
+				& first_similarity >= top
+				& first_similarity >= bottom;
+			// 临时可视化看看找到的极大值点
+			//cv::Mat element = getStructuringElement(MORPH_RECT, Size(15, 15)); //第一个参数MORPH_RECT表示矩形的卷积核，当然还可以选择椭圆形的、交叉型的
+			//cv::Mat show_binary;
+			//cv::dilate(first_binary, show_binary, element);
+
+			// 3.采用连通域的方法，有时会有两个位置连续的，也就是置信度一样的，这样应该可以避免
+			cv::Mat labels, status, centroids;
+			int label_count = cv::connectedComponentsWithStats(first_binary, labels, status, centroids);
+			for (int i = 1; i < label_count; ++i)
+			{
+				int _x = status.at<int>(i, CC_STAT_LEFT);
+				int _y = status.at<int>(i, CC_STAT_TOP);
+				first_results.emplace_back(_x, _y, first_similarity.at<float>(_y, _x));
+			}
+		}
+
+		auto t_first_find_extreme = cv::getTickCount();
+		std::cout << "第一次找相似度极大值耗时：" << (t_first_find_extreme - t_first_count_similarity) / cv::getTickFrequency() << endl;
+		// 4. 根据高层极大值点，映射回到底层的范围，在底层的响应图做相似度计算；
+		cv::Mat second_similarity = cv::Mat::zeros(vec_test_img_pyramid_size[1], CV_32FC1);
+
+		float hight_map_to_low_scale = this->pyramid_scale_level[1] / this->pyramid_scale_level[0];
+		int count_field = 15;	// 在极大值点的5 * 5领域计算金字塔底层的相似度
+
+		for (int extreme_pointIdx = 0; extreme_pointIdx < first_results.size(); extreme_pointIdx++)
+		{
+			cv::Point low_extremePoint_left_up((int)(first_results[extreme_pointIdx].x * hight_map_to_low_scale - count_field),
+											   (int)(first_results[extreme_pointIdx].y * hight_map_to_low_scale - count_field));
+
+			similarityLocal(low_extremePoint_left_up, count_field, this->vec_response_maps[1], second_similarity,
+				this->in_features, hight_map_to_low_scale);
+
+		}
+
+		auto t_second_count_similaty = cv::getTickCount();
+		std::cout << "第二次计算相似度耗时：" << (t_second_count_similaty - t_first_find_extreme) / cv::getTickFrequency() << endl;
+
+		// 5.再根据第二次的相似度图，找极大值
+		{
+			int _rows = second_similarity.rows;
+			int _cols = second_similarity.cols;
+			cv::Mat left = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
+			cv::Mat right = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
+			cv::Mat top = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
+			cv::Mat bottom = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
+
+			second_similarity.rowRange(0, _rows - 1).copyTo(top.rowRange(1, _rows));
+			second_similarity.rowRange(1, _rows).copyTo(bottom.rowRange(0, _rows - 1));
+			second_similarity.colRange(0, _cols - 1).copyTo(left.colRange(1, _cols));
+			second_similarity.colRange(1, _cols).copyTo(right.colRange(0, _cols - 1));
+
+			cv::Mat second_binary = second_similarity >= this->threshold
+				& second_similarity >= left
+				& second_similarity >= right
+				& second_similarity >= top
+				& second_similarity >= bottom;
+			// 临时可视化看看找到的极大值点
+			//cv::Mat element = getStructuringElement(MORPH_RECT, Size(15, 15)); //第一个参数MORPH_RECT表示矩形的卷积核，当然还可以选择椭圆形的、交叉型的
+			//cv::Mat show_binary;
+			//cv::dilate(second_binary, show_binary, element);
+
+			// 3.采用连通域的方法，有时会有两个位置连续的，也就是置信度一样的，这样应该可以避免
+			cv::Mat labels, status, centroids;
+			int label_count = cv::connectedComponentsWithStats(second_binary, labels, status, centroids);
+			for (int i = 1; i < label_count; ++i)
+			{
+				int _x = status.at<int>(i, CC_STAT_LEFT);
+				int _y = status.at<int>(i, CC_STAT_TOP);
+				second_results.emplace_back(_x, _y, second_similarity.at<float>(_y, _x));
+			}
+		}
+
+
+		auto t_second_find_extreme = cv::getTickCount();
+		std::cout << "第二次找极大值耗时：" << (t_second_find_extreme - t_second_count_similaty) / cv::getTickFrequency() << endl;
+
+	}
+
+	// 6.根据底层的匹配结果，进行非极大值抑制，并根据IOU过滤重复的
+
+	auto t_start_nms = getTickCount();
+	cv::Mat show_img, iouShowImg;
+	cv::cvtColor(this->testImg, show_img, COLOR_GRAY2RGB);
+	
+	std::sort(second_results.begin(), second_results.end(), [&](matchResult a, matchResult b) {return a.score > b.score; });
+	auto _results = second_results;
+	std::vector<int> del_results_idx ;
+ 	for (int n = 0; n < second_results.size()-1; n++)
+	{
+		cv::Rect box_0(second_results[n].x, second_results[n].y, this->template_size[0].width, this->template_size[0].height);
+		for (int m = n + 1; m < second_results.size(); m++)
+		{
+			cv::Rect box_1(second_results[m].x, second_results[m].y, this->template_size[0].width, this->template_size[0].height);
+			float twoArea = 2 * (float)this->template_size[0].width * (float)this->template_size[0].height;
 			int iouWidth = std::min(box_1.x + box_1.width, box_0.x + box_0.width) - std::max(box_0.x, box_1.x);
 			int iouHeight = std::min(box_1.y + box_1.height, box_0.y + box_0.height) - std::max(box_0.y, box_1.y);
 			if (iouWidth < 0 || iouHeight < 0)
@@ -869,37 +1002,40 @@ void shapeMatch::inference()
 
 	for (int d = 0; d < del_results_idx.size(); d++)
 	{
-		results.erase(results.begin() + (del_results_idx.at(d) - d));
+		second_results.erase(second_results.begin() + (del_results_idx.at(d) - d));
 
 	}
 
+	auto t_end_nms = getTickCount();
 
+	auto t_nms = (t_end_nms - t_start_nms) / getTickFrequency();
+	std::cout << "NMS IOU 耗时：" << t_nms << endl;
+	auto t_all = (t_end_nms - t_start) / getTickFrequency();
 
-	auto t21 = (getTickCount() - t1) / getTickFrequency();
-	auto tall = (getTickCount() - t0) / getTickFrequency();
-	cout << "滑窗匹配耗时：" << t21 << endl;
-	cout << "形状匹配总耗时：" << tall << endl;
+	std::cout << "形状匹配总耗时：" << t_all << endl;
 
 	// 可视化匹配结果的点
-	for (int i = 0; i < results.size(); i++)
+	for (int i = 0; i < second_results.size(); i++)
 	{
-		int offset_x = results[i].x;
-		int offset_y = results[i].y;
-		int feat_size = (int)this->in_features[0][0].size();
+		int offset_x = second_results[i].x;
+		int offset_y = second_results[i].y;
+		int feat_size = (int)this->in_features[1].second[0].size();
 		for (int f = 0; f < feat_size; f++)
 		{
-			Feature feat = this->in_features[0][0][f];
+			Feature feat = this->in_features[1].second[0][f];
 			int x = offset_x + feat.x;
 			int y = offset_y + feat.y;
 			//show_img.at<Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
 			cv::circle(show_img, cv::Point(x, y), 2, cv::Scalar(0, 0, 255));
 		}
-		putText(show_img, std::to_string(results[i].score).substr(0, 6), cv::Point(results[i].x, results[i].y), 1, 5, cv::Scalar(0, 255, 0), 3);
+		putText(show_img, std::to_string(second_results[i].score).substr(0, 6), cv::Point(second_results[i].x, second_results[i].y), 1, 5, cv::Scalar(0, 255, 0), 3);
 
-		//cout << "匹配到第" << i << "个目标的置信度: " << std::to_string(results[i].score).substr(0, 6) << endl;
+
 
 	}
-	cout << "总匹配数量：" << results.size() << endl;
+	auto t_show = (getTickCount()  - t_end_nms) / getTickFrequency();
+	std::cout << "可视化 耗时：" << t_show << endl;
+	std::cout << "总匹配数量：" << second_results.size() << endl;
 
 	float newWindowWidth, newWindowHeight, fixed = 1000;
 	if (show_img.rows > show_img.cols)
@@ -936,13 +1072,13 @@ LUT3, LUT3, LUT3, 0, 4, LUT3, 4, 0, 4, LUT3, 4, 0, 4, LUT3, 4, 0, 4, LUT3, 4, 0,
 LUT3, LUT3, LUT3, LUT3, 4, 4, 4, 4, 4, 4, 4, 4 };
 
 
-void shapeMatch::computeResponseMaps(const Mat& src, std::vector<Mat>& in_response_maps)
+void shapeMatch::computeResponseMaps(const Mat& src, std::vector<Mat>& in_response_maps, int pyramid_level)
 {
 
 	// Allocate response maps
-	response_maps.resize(8);
+	in_response_maps.resize(8);
 	for (int i = 0; i < 8; ++i)
-		response_maps[i].create(src.size(), CV_8U);
+		in_response_maps[i].create(src.size(), CV_8U);
 
 	cv::Mat lsb4(src.size(), CV_8U);// 低位的四个方向，00001111
 	cv::Mat msb4(src.size(), CV_8U);// 高位的四个方向，11110000
@@ -993,7 +1129,7 @@ void shapeMatch::computeResponseMaps(const Mat& src, std::vector<Mat>& in_respon
 		int Rows = 8;
 		int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
 		std::vector<std::thread> vec_threads;
-		auto temp_response_maps = this->response_maps;
+		auto temp_response_maps = this->vec_response_maps[pyramid_level];
 		for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
 		{
 			int startR = thread_i * per_thread_process_num;
@@ -1007,7 +1143,7 @@ void shapeMatch::computeResponseMaps(const Mat& src, std::vector<Mat>& in_respon
 		{
 			t.join();
 		}
-		this->response_maps = temp_response_maps;
+		this->vec_response_maps[pyramid_level] = temp_response_maps;
 
 
 
@@ -1083,17 +1219,17 @@ void test_shape_match()
 
 	if (mode == "train")
 	{
+		//cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
 		cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
-		shapeInfoProducer trainer(template_img, 64, 30, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
+		shapeInfoProducer trainer(template_img, 64, 30, {0.5, 1}, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
 		trainer.train();
-
 	}
 
 
 	else if (mode == "test")
 	{
 		cv::Mat test_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/test_3.png", 0);	// sl_template_test     sl_test_4
-		shapeMatch tester(test_img, 30, 0.9f, 0.1, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
+		shapeMatch tester(test_img, 30, 0.9f, 0.1f, "F:\\1heils\\sheng_shape_match\\ganfa\\下半部分.yaml");
 		tester.inference();
 
 	}
@@ -1106,7 +1242,6 @@ void test_shape_match()
 int main()
 {
 	test_shape_match();
-
 
  // 	int thread_num = std::thread::hardware_concurrency();
 	//cout << "当前程序允许新开最高线程数：" << thread_num << endl;

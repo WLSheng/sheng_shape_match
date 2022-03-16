@@ -27,7 +27,7 @@ SET(CMAKE_BUILD_TYPE "Release")
 
 # opencv
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} /opt/ros/kinetic)
-find_package(OpenCV 3 REQUIRED)
+find_package(OpenCV 4 REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
 
