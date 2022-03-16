@@ -928,7 +928,7 @@ void shapeMatch::inference()
 		auto t_second_count_similaty = cv::getTickCount();
 		std::cout << "第二次计算相似度耗时：" << (t_second_count_similaty - t_first_find_extreme) / cv::getTickFrequency() << endl;
 
-		// 5.再根据第二次的相似度图，找极大值
+		// 5.再根据第二次的相似度图，找极大值， 需要优化第二次的极大值，图片大，耗时多
 		{
 			int _rows = second_similarity.rows;
 			int _cols = second_similarity.cols;
