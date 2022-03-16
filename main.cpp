@@ -417,8 +417,16 @@ void shapeInfoProducer::train()
 	{
 		float pyramid_levels_scale = this->scale_level[pyramid_levels_num];
 		this->pyramidImg.release();
+
 		cv::Mat smoothed;
 		cv::resize(this->srcImg, this->pyramidImg, cv::Size(0, 0), pyramid_levels_scale, pyramid_levels_scale);
+
+		//cv::Size size(this->srcImg.cols * pyramid_levels_scale, this->srcImg.rows * pyramid_levels_scale);
+		//if ((int)this->pyramid_scale_level[pyramid_level] != 1)
+		//cv::pyrDown(this->srcImg, this->pyramidImg, size);
+
+
+
 		static const int KERNEL_SIZE = 5;
 		cv::GaussianBlur(this->pyramidImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
 
@@ -683,7 +691,8 @@ void shapeMatch::quantizedGradientOrientations(cv::Mat& angle_ori, cv::Mat& quan
 	};
 
 
-	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	//int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	int max_thread_num = 1;
 	int Rows = angle_ori.rows - 2;
 	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
 	std::vector<std::thread> vec_threads;
@@ -748,10 +757,11 @@ void countSimilarity(std::vector<std::pair<int, std::vector<std::vector<Feature>
 	
 	};
 
-	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	//int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	int max_thread_num = 1;
 	int Rows = (int)test_img_size.height - template_size[pyramidIdx].height;
 	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
-	std::cout <<"当前电脑最大线程数："<< max_thread_num << " ,  每个线程最多处理行数：" <<per_thread_process_num <<", 总行数："<< Rows << endl;
+	//std::cout <<"当前电脑最大线程数："<< max_thread_num << " ,  每个线程最多处理行数：" <<per_thread_process_num <<", 总行数："<< Rows << endl;
 	std::vector<std::thread> vec_threads;
 	for (int thread_i = 0; thread_i < max_thread_num; thread_i++)
 	{
@@ -823,8 +833,9 @@ void shapeMatch::inference()
 		cv::Size size(this->testImg.cols * this->pyramid_scale_level[pyramid_level], this->testImg.rows * this->pyramid_scale_level[pyramid_level]);
 		vec_test_img_pyramid_size.emplace_back(size);
 		cv::Mat pyramidImg;
-		if ((int)this->pyramid_scale_level[pyramid_level] != 1)
-			cv::pyrDown(this->testImg, pyramidImg, size);
+		if (this->pyramid_scale_level[pyramid_level] != 1)
+			//cv::pyrDown(this->testImg, pyramidImg, size);
+			cv::resize(this->testImg, pyramidImg, cv::Size(0, 0), this->pyramid_scale_level[pyramid_level], this->pyramid_scale_level[pyramid_level]);
 		else
 			pyramidImg = this->testImg.clone();
 		cv::Mat smoothed;
@@ -1125,7 +1136,8 @@ void shapeMatch::computeResponseMaps(const Mat& src, std::vector<Mat>& in_respon
 			}
 		};
 
-		int max_thread_num = std::min(8, (int)std::thread::hardware_concurrency() / 1);
+		//int max_thread_num = std::min(8, (int)std::thread::hardware_concurrency() / 1);
+		int max_thread_num = 1;
 		int Rows = 8;
 		int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
 		std::vector<std::thread> vec_threads;
@@ -1192,7 +1204,8 @@ void shapeMatch::orUnaligned8u(const uchar* src, const int src_stride, uchar* ds
 		}
 	};
 
-	int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	//int max_thread_num = (int)std::thread::hardware_concurrency() / 1;
+	int max_thread_num = 1;
 	int Rows = height;
 	int per_thread_process_num = (int)std::ceil((float)Rows / (float)max_thread_num);
 	std::vector<std::thread> vec_threads;
@@ -1221,7 +1234,7 @@ void test_shape_match()
 	{
 		//cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
 		cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
-		shapeInfoProducer trainer(template_img, 64, 30, {0.5, 1}, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
+		shapeInfoProducer trainer(template_img, 64, 30, {0.3, 1}, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
 		trainer.train();
 	}
 
