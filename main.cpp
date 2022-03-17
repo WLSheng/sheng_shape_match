@@ -57,17 +57,18 @@ class shapeInfoProducer
 {
 
 public:
-	shapeInfoProducer(cv::Mat& src, int in_featuresNum, float magnitude, std::vector<float> _scale_range, string inpath);
+	shapeInfoProducer(cv::Mat& src, int in_featuresNum, float magnitude, std::vector<float> _scale_range, std::vector<float> _angle_range, string inpath);
 	~shapeInfoProducer(void);
 	//shapeInfoProducer(cv::Mat& src, int in_featuresNum, float magnitude, float threshold) {};
 	cv::Mat srcImg, pyramidImg;
-	cv::Mat magnitudeImg;		//梯度幅值图
-	cv::Mat quantized_angle;				// 量化后的角度图，根据离散量化投票机制，找出每个位置3x3领域中出现次数最多的方向(为了避免小的形变的影响)，如果投票数量小于5，方向则为0， [0-7]；
-	cv::Mat angle_ori;			// 角度图, 
-	float magnitude_value;			//选特征点时的幅值阈值
+	cv::Mat magnitudeImg;							//梯度幅值图
+	cv::Mat quantized_angle;						// 量化后的角度图，根据离散量化投票机制，找出每个位置3x3领域中出现次数最多的方向(为了避免小的形变的影响)，如果投票数量小于5，方向则为0， [0-7]；
+	cv::Mat angle_ori;								// 角度图, 
+	float magnitude_value;							//选特征点时的幅值阈值
 	int num_features;
-	std::vector<float> scale_level; // 模板的多比例
-	int scale_level_num;				// 多比例的层数
+	std::vector<float> scale_level;					// 模板的多比例
+	int scale_level_num;								// 多比例的层数
+	std::vector<float> angle_range;					// 模板的多比例
 	std::string path;
 
 	std::vector<Feature> out_features;	// 过了极大值，然后再过一次距离判断，找到的最终特征点
@@ -102,7 +103,6 @@ public:
 
 
 	// 滞后方向，就是找出3X3领域内主要的方向，
-	// magnitudeImg, quantized_angle, angle_ori, magnitude_value * magnitude_value
 	void hysteresisGradient();
 
 	bool extractFeaturePoints();
@@ -139,7 +139,7 @@ void shapeInfoProducer::hysteresisGradient()
 		uchar* quant_r = quantized_unfiltered.ptr<uchar>(r);
 		for (int c = 1; c < this->angle_ori.cols - 1; ++c)
 		{
-			quant_r[c] &= 7;// 很巧妙地做了一个反转，如方向15的转为7,这里就是量化方向，360度换乘16块，再变成8块，也就是8个方向
+			quant_r[c] &= 7;// 很巧妙地做了一个反转，如方向15的转为7,这里就是量化方向，360度转成16个方向，再变成8个方向
 		}
 	}
 
@@ -375,13 +375,14 @@ bool shapeInfoProducer::selectScatteredFeatures(const std::vector<Candidate>& ca
 }
 
 
-shapeInfoProducer::shapeInfoProducer(cv::Mat& in_src, int in_featuresNum, float in_magnitude, std::vector<float> _scale_range, string inpath)
+shapeInfoProducer::shapeInfoProducer(cv::Mat& in_src, int in_featuresNum, float in_magnitude, std::vector<float> _scale_range, std::vector<float> _angle_range, string inpath)
 {
 	this->srcImg = in_src;
 	this->magnitude_value = in_magnitude;
 	this->num_features = in_featuresNum;
 	this->scale_level = _scale_range;
 	this->scale_level_num = (int)_scale_range.size();
+	this->angle_range = _angle_range;
 	this->path = inpath;
 	/*cout << "strat train, train img rows:" << this->srcImg.rows << endl;
 	cout << "num_features:" << num_features << endl;
@@ -924,7 +925,7 @@ void shapeMatch::inference()
 		cv::Mat second_similarity = cv::Mat::zeros(vec_test_img_pyramid_size[1], CV_32FC1);
 
 		float hight_map_to_low_scale = this->pyramid_scale_level[1] / this->pyramid_scale_level[0];
-		int count_field = 15;	// 在极大值点的5 * 5领域计算金字塔底层的相似度
+		int count_field = 15;	// 在高层金字塔的极大值点映射到底层点的5 * 5领域，计算金字塔底层的相似度
 
 		for (int extreme_pointIdx = 0; extreme_pointIdx < first_results.size(); extreme_pointIdx++)
 		{
@@ -938,45 +939,53 @@ void shapeMatch::inference()
 
 		auto t_second_count_similaty = cv::getTickCount();
 		std::cout << "第二次计算相似度耗时：" << (t_second_count_similaty - t_first_find_extreme) / cv::getTickFrequency() << endl;
-
+		cv::Mat second_similarity_extreme;
+		second_similarity.convertTo(second_similarity_extreme, CV_8U, 200);
 		// 5.再根据第二次的相似度图，找极大值， 需要优化第二次的极大值，图片大，耗时多
 		{
-			int _rows = second_similarity.rows;
-			int _cols = second_similarity.cols;
-			cv::Mat left = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
-			cv::Mat right = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
-			cv::Mat top = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
-			cv::Mat bottom = cv::Mat::zeros(second_similarity.size(), second_similarity.type());
+			int _rows = second_similarity_extreme.rows;
+			int _cols = second_similarity_extreme.cols;
+			cv::Mat left = cv::Mat::zeros(second_similarity_extreme.size(), second_similarity_extreme.type());
+			cv::Mat right = cv::Mat::zeros(second_similarity_extreme.size(), second_similarity_extreme.type());
+			cv::Mat top = cv::Mat::zeros(second_similarity_extreme.size(), second_similarity_extreme.type());
+			cv::Mat bottom = cv::Mat::zeros(second_similarity_extreme.size(), second_similarity_extreme.type());
 
-			second_similarity.rowRange(0, _rows - 1).copyTo(top.rowRange(1, _rows));
-			second_similarity.rowRange(1, _rows).copyTo(bottom.rowRange(0, _rows - 1));
-			second_similarity.colRange(0, _cols - 1).copyTo(left.colRange(1, _cols));
-			second_similarity.colRange(1, _cols).copyTo(right.colRange(0, _cols - 1));
 
-			cv::Mat second_binary = second_similarity >= this->threshold
-				& second_similarity >= left
-				& second_similarity >= right
-				& second_similarity >= top
-				& second_similarity >= bottom;
+			second_similarity_extreme.rowRange(0, _rows - 1).copyTo(top.rowRange(1, _rows));
+			second_similarity_extreme.rowRange(1, _rows).copyTo(bottom.rowRange(0, _rows - 1));
+			second_similarity_extreme.colRange(0, _cols - 1).copyTo(left.colRange(1, _cols));
+			second_similarity_extreme.colRange(1, _cols).copyTo(right.colRange(0, _cols - 1));
+
+			auto t_max_2 = cv::getTickCount();
+			cv::Mat second_binary = second_similarity_extreme >= (uint8_t)(this->threshold*200)
+				& second_similarity_extreme >= left
+				& second_similarity_extreme >= right
+				& second_similarity_extreme >= top
+				& second_similarity_extreme >= bottom;
+			auto t_max_3 = cv::getTickCount();
+			std::cout << "第二次找极大值耗时：" << (t_max_3 - t_max_2) / cv::getTickFrequency() << endl;
 			// 临时可视化看看找到的极大值点
 			//cv::Mat element = getStructuringElement(MORPH_RECT, Size(15, 15)); //第一个参数MORPH_RECT表示矩形的卷积核，当然还可以选择椭圆形的、交叉型的
 			//cv::Mat show_binary;
 			//cv::dilate(second_binary, show_binary, element);
 
-			// 3.采用连通域的方法，有时会有两个位置连续的，也就是置信度一样的，这样应该可以避免
-			cv::Mat labels, status, centroids;
-			int label_count = cv::connectedComponentsWithStats(second_binary, labels, status, centroids);
-			for (int i = 1; i < label_count; ++i)
+			// 统计极大值
+			for (int r = 0; r < second_binary.rows; r++)
 			{
-				int _x = status.at<int>(i, CC_STAT_LEFT);
-				int _y = status.at<int>(i, CC_STAT_TOP);
-				second_results.emplace_back(_x, _y, second_similarity.at<float>(_y, _x));
+				uchar* bin_r = second_binary.ptr<uchar>(r);
+				for (int c = 0; c < second_binary.cols; c++)
+				{
+					if (bin_r[c] == 255)
+					{
+						second_results.emplace_back(c, r, second_similarity.at<float>(r, c));
+
+					}
+				}
 			}
+
+			auto t_max_4 = cv::getTickCount();
+			std::cout << "找连通域耗时：" << (t_max_4 - t_max_3) / cv::getTickFrequency() << endl;
 		}
-
-
-		auto t_second_find_extreme = cv::getTickCount();
-		std::cout << "第二次找极大值耗时：" << (t_second_find_extreme - t_second_count_similaty) / cv::getTickFrequency() << endl;
 
 	}
 
@@ -1227,14 +1236,14 @@ void shapeMatch::orUnaligned8u(const uchar* src, const int src_stride, uchar* ds
 
 void test_shape_match()
 {
-	string mode = "test";  
-	 //string mode = "train";
+	//string mode = "test";  
+	 string mode = "train";
 
 	if (mode == "train")
 	{
 		//cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
-		cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
-		shapeInfoProducer trainer(template_img, 64, 30, {0.3, 1}, "F:\\1heils\\sheng_shape_match\\ganfa/下半部分.yaml");
+		cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/上半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
+		shapeInfoProducer trainer(template_img, 64, 30, {0.3, 1}, "F:\\1heils\\sheng_shape_match\\ganfa/上半部分.yaml");
 		trainer.train();
 	}
 
@@ -1242,7 +1251,7 @@ void test_shape_match()
 	else if (mode == "test")
 	{
 		cv::Mat test_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/test_3.png", 0);	// sl_template_test     sl_test_4
-		shapeMatch tester(test_img, 30, 0.9f, 0.1f, "F:\\1heils\\sheng_shape_match\\ganfa\\下半部分.yaml");
+		shapeMatch tester(test_img, 30, 0.9f, 0.1f, "F:\\1heils\\sheng_shape_match\\ganfa\\上半部分.yaml");
 		tester.inference();
 
 	}
