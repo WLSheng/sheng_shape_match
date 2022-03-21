@@ -448,7 +448,7 @@ void shapeInfoProducer::train()
 		for (int angle_idx = 0; angle_idx < this->rotate_angle.size(); angle_idx++)
 		{
 			cv::Mat smoothed;
-			static const int KERNEL_SIZE = 3;
+			static const int KERNEL_SIZE = 5;
 			cv::GaussianBlur(this->srcImg, smoothed, Size(KERNEL_SIZE, KERNEL_SIZE), 0, 0, BORDER_REPLICATE);
 
 			this->pyramidImg = transform(smoothed, this->rotate_angle[angle_idx], 1);
@@ -973,7 +973,8 @@ void shapeMatch::inference()
 		{
 			cv::Point low_extremePoint_left_up((int)(first_results[extreme_pointIdx].x * hight_map_to_low_scale - count_field),
 				(int)(first_results[extreme_pointIdx].y * hight_map_to_low_scale - count_field));
-
+			low_extremePoint_left_up.x = std::max(0, low_extremePoint_left_up.x);
+			low_extremePoint_left_up.y = std::max(0, low_extremePoint_left_up.y);
 			similarityLocal(low_extremePoint_left_up, count_field, this->vec_response_maps[1], second_similarity,
 				this->in_features, match_angle_results, this->score_threshold);
 
@@ -1103,33 +1104,7 @@ void shapeMatch::inference()
 		}
 
 	}
-	/*
-	int matchNum = 0;
-	for (int angle_idx = 0; angle_idx < match_angle_results.size(); angle_idx++)
-	{
-		std::cout << "当前角度：" << this->vec_angle[1].second[angle_idx] << ", 匹配到的数量：" << match_angle_results[angle_idx].size() << std::endl;
-		for (int j = 0; j < match_angle_results[angle_idx].size(); j++)
-		{
-			int offset_x = match_angle_results[angle_idx][j].x;
-			int offset_y = match_angle_results[angle_idx][j].y;
-			int feat_size = (int)this->in_features[1].second[angle_idx].size();
-			std::string show_str_score = std::to_string(match_angle_results[angle_idx][j].score).substr(0, 6);
-			std::string show_str_angle = "angle:" + std::to_string(this->vec_angle[1].second[angle_idx]).substr(0, 4);
-			putText(show_img, show_str_score, cv::Point(match_angle_results[angle_idx][j].x, match_angle_results[angle_idx][j].y), 1, 5, cv::Scalar(0, 255, 0), 3);
-			putText(show_img, show_str_angle, cv::Point(match_angle_results[angle_idx][j].x, match_angle_results[angle_idx][j].y+60), 1, 5, cv::Scalar(0, 255, 0), 3);
-			for (int f = 0; f < feat_size; f++)
-			{
-				Feature feat = this->in_features[1].second[angle_idx][f];
-				int x = offset_x + feat.x;
-				int y = offset_y + feat.y;
-				cv::circle(show_img, cv::Point(x, y), 2, cv::Scalar(0, 0, 255));
-			}
-			matchNum++;
 
-		}
-
-
-	}*/
 	auto t_show = (getTickCount()  - t_end_nms) / getTickFrequency();
 	std::cout << "可视化 耗时：" << t_show << endl;
 	std::cout << "总匹配数量：" << all_match.size() << endl;
@@ -1153,7 +1128,7 @@ void shapeMatch::inference()
 	cv::imshow("show_img", show_img);
 	cv::waitKey(0);
 
-	cv::imwrite("F:\\1heils\\sheng_shape_match\\ganfa\\save.png", show_img);
+	cv::imwrite("D:\\1_industrial\\sheng_shape_match\\bcp\\save.png", show_img);
 
 }
 
@@ -1313,21 +1288,21 @@ void shapeMatch::orUnaligned8u(const uchar* src, const int src_stride, uchar* ds
 
 void test_shape_match()
 {
-	string mode = "test";  
-	 //string mode = "train";
+	//string mode = "train";  
+	string mode = "test";
 
 	if (mode == "train")
 	{
 		//cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
-		cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/上半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
-		shapeInfoProducer trainer(template_img, 64, 30, { 0.3, 1 }, 1.0f, {-3.0f, 3.0f}, "F:\\1heils\\sheng_shape_match\\ganfa/上半部分.yaml");
+		cv::Mat template_img = cv::imread("D:\\1_industrial\\sheng_shape_match\\SL/sl_template.png", 0);//规定输入的是灰度图，三通道的先不弄
+		shapeInfoProducer trainer(template_img, 64, 30, { 0.3, 1 }, 0.2f, {-2.0f, 2.0f}, "D:\\1_industrial\\sheng_shape_match\\SL/train.yaml");
 		trainer.train();
 	}
 
-	else if (mode == "test")
+	if (mode == "test")
 	{
-		cv::Mat test_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/test_2 - 副本.png", 0);	// sl_template_test     sl_test_4
-		shapeMatch tester(test_img, 30, 0.9f, 0.1f, "F:\\1heils\\sheng_shape_match\\ganfa\\上半部分.yaml");
+		cv::Mat test_img = cv::imread("D:\\1_industrial\\sheng_shape_match\\SL/sl_test_3.png", 0);	// sl_template_test     sl_test_4
+		shapeMatch tester(test_img, 30, 0.7f, 0.1f, "D:\\1_industrial\\sheng_shape_match\\SL/train.yaml");
 		tester.inference();
 	}
 }
