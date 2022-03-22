@@ -208,36 +208,15 @@ bool shapeInfoProducer::extractFeaturePoints()
 	cv::Mat magnitude_valid = cv::Mat(this->magnitudeImg.size(), CV_8UC1, cv::Scalar(255));
 	cv::Mat temp_show = this->quantized_angle.clone();
 
-	// 非极大值抑制, 找到比上下左右都大且大于某个阈值的像素。
-	cv::Mat left = cv::Mat::zeros(this->magnitudeImg.size(), this->magnitudeImg.type());
-	cv::Mat right = cv::Mat::zeros(this->magnitudeImg.size(), this->magnitudeImg.type());
-	cv::Mat top = cv::Mat::zeros(this->magnitudeImg.size(), this->magnitudeImg.type());
-	cv::Mat bottom = cv::Mat::zeros(this->magnitudeImg.size(), this->magnitudeImg.type());
-	int nms_offset = 1;
-	int rows = this->magnitudeImg.rows;
-	int cols = this->magnitudeImg.cols;
-	this->magnitudeImg.rowRange(0, rows - nms_offset).copyTo(top.rowRange(nms_offset, rows));
-	this->magnitudeImg.rowRange(nms_offset, rows).copyTo(bottom.rowRange(0, rows - nms_offset));
-
-	this->magnitudeImg.colRange(0, cols - nms_offset).copyTo(left.colRange(nms_offset, cols));
-	this->magnitudeImg.colRange(nms_offset, cols).copyTo(right.colRange(0, cols - nms_offset));
-
-
-	cv::Mat binary = this->magnitudeImg >= threshold_sq
-		& this->magnitudeImg > left
-		& this->magnitudeImg > right
-		& this->magnitudeImg > top
-		& this->magnitudeImg > bottom;
-
-
 	// 获取极大值
 	std::vector<Candidate> temp_candidates;
-	for (int row = 1; row < binary.rows - 1; ++row) {
-		for (int col = 1; col < binary.cols - 1; ++col)
+	for (int row = 1; row < magnitudeImg.rows - 1; ++row) {
+		for (int col = 1; col < magnitudeImg.cols - 1; ++col)
 		{
-			if (binary.at<uint8_t>(row, col) != 0 && (int)this->quantized_angle.at<uchar>(row, col) != 0)
-			{
 				float _score = this->magnitudeImg.at<float>(row, col);
+			//if (binary.at<uint8_t>(row, col) != 0 && (int)this->quantized_angle.at<uchar>(row, col) != 0)
+			if (_score >= threshold_sq && (int)this->quantized_angle.at<uchar>(row, col) != 0)
+			{
 				//cout << "col:" << col << ", row: " << row << ", angle:" << (int)this->quantized_angle.at<uchar>(row, col) << endl;
 				temp_candidates.emplace_back(Candidate(col, row, this->getLabel(this->quantized_angle.at<uchar>(row, col)), _score));
 				//index_score.emplace_back(_temp);
@@ -245,8 +224,9 @@ bool shapeInfoProducer::extractFeaturePoints()
 			}
 		}
 	}
+
 	sort(temp_candidates.begin(), temp_candidates.end()); // 降序
-	// 过一遍非极大值抑制
+	 //过一遍非极大值抑制
 	std::vector<int> del_index;
 	for (int i = 0; i < temp_candidates.size() - 1; i++)
 	{
@@ -256,7 +236,7 @@ bool shapeInfoProducer::extractFeaturePoints()
 			cv::Point two_coor = cv::Point(temp_candidates.at(ii).f.x, temp_candidates.at(ii).f.y);
 			if (abs(one_coor.x - two_coor.x) < nms_kernel_size && abs(one_coor.y - two_coor.y) < nms_kernel_size)
 			{
-				// 遇到领域内重复,并且前面是必定大于后面的
+				 //遇到领域内重复,并且前面是必定大于后面的
 				del_index.emplace_back(ii);
 			}
 		}
@@ -269,7 +249,7 @@ bool shapeInfoProducer::extractFeaturePoints()
 
 	}
 
-	// 临时可视化全部极大值特征
+	// //临时可视化全部极大值特征
 	cv::Mat show_max;
 	cv::cvtColor(this->pyramidImg, show_max, COLOR_GRAY2RGB);
 	for (int i = 0; i < temp_candidates.size(); i++)
@@ -1288,14 +1268,14 @@ void shapeMatch::orUnaligned8u(const uchar* src, const int src_stride, uchar* ds
 
 void test_shape_match()
 {
-	//string mode = "train";  
-	string mode = "test";
+	string mode = "train";  
+	//string mode = "test";
 
 	if (mode == "train")
 	{
 		//cv::Mat template_img = cv::imread("F:\\1heils\\sheng_shape_match\\ganfa/下半部分.png", 0);//规定输入的是灰度图，三通道的先不弄
 		cv::Mat template_img = cv::imread("D:\\1_industrial\\sheng_shape_match\\SL/sl_template.png", 0);//规定输入的是灰度图，三通道的先不弄
-		shapeInfoProducer trainer(template_img, 64, 30, { 0.3, 1 }, 0.2f, {-2.0f, 2.0f}, "D:\\1_industrial\\sheng_shape_match\\SL/train.yaml");
+		shapeInfoProducer trainer(template_img, 64, 30, { 1, 1 }, 0.2f, {-2.0f, 2.0f}, "D:\\1_industrial\\sheng_shape_match\\SL/train.yaml");
 		trainer.train();
 	}
 
